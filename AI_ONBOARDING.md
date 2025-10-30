@@ -1,0 +1,70 @@
+# HR System — AI Onboarding Guide
+
+This document helps a new AI contributor continue work on the project without losing context.
+
+## Project Snapshot
+
+- Framework: Next.js 16 (App Router, client components), TypeScript, TailwindCSS 4.
+- Backend: Prisma ORM with SQLite (`prisma/dev.db`).
+- Auth/workflow features scaffolded but not fully wired; focus areas right now are employee/shift management and data import.
+- Package scripts: `npm run dev`, `npm run build`, `npm run start`, `npm run lint`.
+
+## Local Setup
+
+1. Install dependencies with `npm install --legacy-peer-deps`.
+2. Ensure the Prisma schema is in sync: `npx prisma db push` (already generates `prisma/dev.db`).
+3. Start the dev server: `npm run dev` (listens on `http://localhost:3000`).
+
+## Data Model Highlights
+
+- `Zone`, `Branch`, `Department` tables were added; each generates system codes (`ZONE-xxx`, `BRN-xxx`, `DEP-xxx`).
+- `Employee` now stores foreign keys (`zoneId`, `branchId`, `departmentId`) in addition to legacy `department` text.
+- Prisma client helper lives in `lib/prisma.ts` using a `globalThis` singleton.
+
+## API Endpoints
+
+All routes under `app/api/...` use REST semantics and return JSON.
+
+- `GET /api/zones` — list zones (includes branches/departments).
+- `POST /api/zones` — create zone; auto-codes sequentially.
+- `PUT /api/zones/[id]`, `DELETE /api/zones/[id]` — update/delete with cascading cleanup.
+- Similar CRUD exists for `branches` and `departments`.
+- `GET /api/employees` — list employees with populated zone/branch/department.
+- `POST /api/employees`, `PUT /api/employees/[id]`, `DELETE /api/employees/[id]`.
+- `POST /api/employees/import` — accepts CSV (headers in Thai) to bulk create/update employees. Validates that referenced zone/branch/department codes exist and match hierarchy.
+
+## Frontend Flow (app/employees/page.tsx)
+
+1. Loads zones/branches/departments/employees from APIs on mount.
+2. Step-by-step UI:
+   - Step 1: Create zones.
+   - Step 2: Assign branches to zones.
+   - Step 3: Assign departments to branches.
+   - Step 4: Add employees via form or upload CSV (`+ เพิ่มไฟล์พนักงาน`).
+3. CSV template is stored at `public/templates/employee-import-template.csv` and linked in the UI/README.
+
+## Known Issues / TODO
+
+Lint (`npm run lint`) currently fails because of pre-existing issues outside the employee module:
+
+- `app/import/page.tsx`: escape quotes (`react/no-unescaped-entities`).
+- `app/shifts/page.tsx`: replace `Date.now()` in render path; unused event params.
+- `lib/csv-parser.ts`: replace `any` with explicit types.
+- Several unused variables warnings in other components.
+
+Plan to clean these up before shipping or enabling CI.
+
+## Testing Suggestions
+
+- Manual: run `npm run dev`, walk through zone → branch → department → employee flows, test CSV upload (both success and validation failures).
+- Automated: consider adding Vitest/Playwright later; none currently configured.
+
+## Useful Tips
+
+- Use `fetch` with JSON body for CRUD; CSV import must send `FormData`.
+- All new codes are generated server-side; avoid generating them on the client.
+- Keep Thai/English labeling consistent; user-facing strings on employees page are Thai.
+- When modifying Prisma schema, re-run `npx prisma db push`.
+- Reminder: there is an external Numbers file `employee-import-template 2.numbers`; CSV template is the canonical source.
+
+Feel free to update this guide as workflows evolve.

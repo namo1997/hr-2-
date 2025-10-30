@@ -1,0 +1,339 @@
+// Prisma schema สำหรับระบบ HR
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+// โครงสร้างองค์กร
+model Zone {
+  id         Int       @id @default(autoincrement())
+  code       String    @unique
+  name       String
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  branches   Branch[]
+  employees  Employee[]
+}
+
+model Branch {
+  id         Int       @id @default(autoincrement())
+  code       String    @unique
+  name       String
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  zoneId     Int
+  zone       Zone      @relation(fields: [zoneId], references: [id])
+  departments Department[]
+  employees   Employee[]
+
+  @@index([zoneId])
+}
+
+model Department {
+  id         Int       @id @default(autoincrement())
+  code       String    @unique
+  name       String
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  branchId   Int
+  branch     Branch    @relation(fields: [branchId], references: [id])
+  employees  Employee[] @relation("DepartmentEmployees")
+
+  @@index([branchId])
+}
+
+// ตารางผู้ใช้งาน
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  password      String
+  name          String
+  role          UserRole  @default(EMPLOYEE)
+  employeeId    Int?      @unique
+  employee      Employee? @relation(fields: [employeeId], references: [id])
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  
+  // สำหรับหัวหน้า - พนักงานที่อยู่ภายใต้
+  managedEmployees EmployeeManager[]
+  
+  // สำหรับการอนุมัติ
+  approvals     Approval[]
+}
+
+enum UserRole {
+  ADMIN
+  MANAGER
+  EMPLOYEE
+}
+
+// ตารางข้อมูลพนักงาน
+model Employee {
+  id            Int       @id @default(autoincrement())
+  employeeCode  String    @unique // รหัสพนักงานจากระบบสแกนนิ้ว
+  name          String
+  nickname      String?
+  department    String
+  position      String?
+  startDate     DateTime  @default(now())
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  
+  // ความสัมพันธ์
+  user          User?
+  shiftAssignments ShiftAssignment[]
+  attendances   Attendance[]
+  leaveRequests LeaveRequest[]
+  overtimeRequests OvertimeRequest[]
+  managers      EmployeeManager[]
+
+  // ความสัมพันธ์กับโครงสร้าง
+  zoneId        Int?
+  branchId      Int?
+  departmentId  Int?
+  zone          Zone?       @relation(fields: [zoneId], references: [id])
+  branch        Branch?     @relation(fields: [branchId], references: [id])
+  departmentRel Department? @relation("DepartmentEmployees", fields: [departmentId], references: [id])
+}
+
+// ตารางความสัมพันธ์หัวหน้า-พนักงาน
+model EmployeeManager {
+  id          Int       @id @default(autoincrement())
+  employeeId  Int
+  managerId   String
+  employee    Employee  @relation(fields: [employeeId], references: [id])
+  manager     User      @relation(fields: [managerId], references: [id])
+  createdAt   DateTime  @default(now())
+  
+  @@unique([employeeId, managerId])
+}
+
+// ตารางกะทำงาน
+model Shift {
+  id              Int       @id @default(autoincrement())
+  name            String
+  startTime       String    // HH:mm format
+  endTime         String    // HH:mm format
+  breakType       BreakType
+  breakDuration   Int       // นาที
+  // สำหรับ FLEXIBLE break
+  flexBreakStart  String?   // HH:mm
+  flexBreakEnd    String?   // HH:mm
+  // สำหรับ FIXED break
+  fixedBreakStart String?   // HH:mm
+  lateGracePeriod Int       @default(0) // นาทีที่อนุโลมการมาสาย
+  overtimeStart   Int       @default(0) // นาทีหลังเลิกงานที่นับ OT
+  isActive        Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  
+  // ความสัมพันธ์
+  assignments     ShiftAssignment[]
+}
+
+enum BreakType {
+  FLEXIBLE  // พักยืดหยุ่น
+  FIXED     // พักตายตัว
+}
+
+// ตารางการกำหนดกะให้พนักงาน
+model ShiftAssignment {
+  id          Int       @id @default(autoincrement())
+  employeeId  Int
+  shiftId     Int
+  startDate   DateTime
+  endDate     DateTime?
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  employee    Employee  @relation(fields: [employeeId], references: [id])
+  shift       Shift     @relation(fields: [shiftId], references: [id])
+  
+  @@index([employeeId, startDate])
+}
+
+// ตารางการสแกนนิ้ว (raw data)
+model AttendanceScan {
+  id          Int       @id @default(autoincrement())
+  employeeCode String
+  scanDate    DateTime
+  scanTime    String    // HH:mm:ss
+  scanCount   Int
+  allScans    String    // JSON array of all scan times
+  importedAt  DateTime  @default(now())
+  importSource String   @default("manual")
+  
+  @@index([employeeCode, scanDate])
+}
+
+// ตารางการลงเวลา (processed data)
+model Attendance {
+  id              Int             @id @default(autoincrement())
+  employeeId      Int
+  date            DateTime
+  shiftId         Int?
+  // เวลาที่สแกน
+  checkIn         String?         // HH:mm:ss
+  breakOut        String?
+  breakIn         String?
+  checkOut        String?
+  // สถานะ
+  status          AttendanceStatus @default(PRESENT)
+  isLate          Boolean         @default(false)
+  lateMinutes     Int             @default(0)
+  isEarlyLeave    Boolean         @default(false)
+  earlyMinutes    Int             @default(0)
+  // เวลาทำงาน
+  workMinutes     Int             @default(0)
+  overtimeMinutes Int             @default(0)
+  // หมายเหตุ
+  notes           String?
+  // การอนุมัติ
+  isAdjusted      Boolean         @default(false)
+  adjustedBy      String?
+  adjustedAt      DateTime?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  
+  employee        Employee        @relation(fields: [employeeId], references: [id])
+  leaveRequest    LeaveRequest?
+  
+  @@unique([employeeId, date])
+  @@index([employeeId, date])
+}
+
+enum AttendanceStatus {
+  PRESENT       // มาทำงาน
+  ABSENT        // ขาดงาน
+  LEAVE         // ลา (อนุมัติแล้ว)
+  PENDING_LEAVE // รอการอนุมัติลา
+  HOLIDAY       // วันหยุด
+  DAY_OFF       // วันหยุดประจำสัปดาห์
+}
+
+// ตารางการลา
+model LeaveRequest {
+  id            Int               @id @default(autoincrement())
+  employeeId    Int
+  leaveType     LeaveType
+  startDate     DateTime
+  endDate       DateTime
+  totalDays     Float
+  reason        String
+  status        RequestStatus     @default(PENDING)
+  // การอนุมัติ
+  submittedAt   DateTime          @default(now())
+  reviewedAt    DateTime?
+  reviewedBy    String?
+  reviewNote    String?
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+  
+  employee      Employee          @relation(fields: [employeeId], references: [id])
+  attendanceId  Int?              @unique
+  attendance    Attendance?       @relation(fields: [attendanceId], references: [id])
+  approvals     Approval[]
+  
+  @@index([employeeId, startDate])
+}
+
+enum LeaveType {
+  SICK          // ลาป่วย
+  PERSONAL      // ลากิจ
+  ANNUAL        // ลาพักร้อน
+  MATERNITY     // ลาคลอด
+  OTHER         // อื่นๆ
+}
+
+// ตารางการทำ OT
+model OvertimeRequest {
+  id            Int           @id @default(autoincrement())
+  employeeId    Int
+  date          DateTime
+  startTime     String        // HH:mm
+  endTime       String        // HH:mm
+  totalMinutes  Int
+  reason        String
+  status        RequestStatus @default(PENDING)
+  // การอนุมัติ
+  submittedAt   DateTime      @default(now())
+  reviewedAt    DateTime?
+  reviewedBy    String?
+  reviewNote    String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  
+  employee      Employee      @relation(fields: [employeeId], references: [id])
+  approvals     Approval[]
+  
+  @@index([employeeId, date])
+}
+
+// ตารางการสลับวันหยุด
+model DayOffSwap {
+  id              Int           @id @default(autoincrement())
+  employeeId      Int
+  originalDate    DateTime      // วันหยุดเดิมที่ต้องการสลับ
+  swapToDate      DateTime      // วันที่ต้องการสลับมา
+  reason          String
+  status          RequestStatus @default(PENDING)
+  // การอนุมัติ
+  submittedAt     DateTime      @default(now())
+  reviewedAt      DateTime?
+  reviewedBy      String?
+  reviewNote      String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  
+  approvals       Approval[]
+  
+  @@index([employeeId, originalDate])
+}
+
+enum RequestStatus {
+  PENDING   // รออนุมัติ
+  APPROVED  // อนุมัติ
+  REJECTED  // ไม่อนุมัติ
+  CANCELLED // ยกเลิก
+}
+
+// ตารางการอนุมัติ (Workflow)
+model Approval {
+  id              Int       @id @default(autoincrement())
+  requestType     String    // LeaveRequest, OvertimeRequest, DayOffSwap
+  requestId       Int
+  approverId      String
+  approverLevel   Int       @default(1) // ระดับการอนุมัติ (1 = หัวหน้าโดยตรง, 2 = ผู้บริหาร)
+  status          RequestStatus @default(PENDING)
+  comment         String?
+  reviewedAt      DateTime?
+  createdAt       DateTime  @default(now())
+  
+  approver        User      @relation(fields: [approverId], references: [id])
+  leaveRequest    LeaveRequest?    @relation(fields: [leaveRequestId], references: [id])
+  leaveRequestId  Int?
+  overtimeRequest OvertimeRequest? @relation(fields: [overtimeRequestId], references: [id])
+  overtimeRequestId Int?
+  dayOffSwap      DayOffSwap?      @relation(fields: [dayOffSwapId], references: [id])
+  dayOffSwapId    Int?
+  
+  @@index([approverId, status])
+}
+
+// ตารางวันหยุดประจำปี
+model Holiday {
+  id          Int       @id @default(autoincrement())
+  name        String
+  date        DateTime
+  isRecurring Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  
+  @@unique([date])
+}
