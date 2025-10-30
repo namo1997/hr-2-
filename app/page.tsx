@@ -1,348 +1,118 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 
-type WorkCalculationRecord = {
-  id: number;
-  employeeCode: string;
-  employeeName: string | null;
-  departmentName: string | null;
-  branchName: string | null;
-  zoneName: string | null;
-  date: string;
-  shiftName: string | null;
-  shiftStart: string | null;
-  shiftEnd: string | null;
-  checkIn: string | null;
-  breakOut: string | null;
-  breakIn: string | null;
-  checkOut: string | null;
-  scanCount: number;
-  scanTimes: string[];
-  importSource: string;
-  importedAt: string;
-  lateMinutes: number;
-  breakExceededMinutes: number;
-  overtimeMinutes: number;
-  missingCheckIn: boolean;
-  missingCheckOut: boolean;
-  missingBreak: boolean;
-  workingMinutes: number;
-};
+const actions = [
+  {
+    title: 'จัดการพนักงาน',
+    description: 'ตั้งค่าโครงสร้างโซน-สาขา-แผนก เพิ่ม/แก้ไขพนักงาน และบริหาร Workflow การอนุมัติ',
+    href: '/employees',
+    tone: 'from-blue-500 to-blue-600',
+  },
+  {
+    title: 'กะการทำงาน',
+    description: 'สร้างและปรับกะทำงานรายวัน กำหนดเวลาพักแบบยืดหยุ่นหรือกำหนดเวลา แล้วผูกกับกลุ่มพนักงาน',
+    href: '/shifts',
+    tone: 'from-green-500 to-green-600',
+  },
+  {
+    title: 'นำเข้าข้อมูลสแกนนิ้ว',
+    description: 'อัปโหลดไฟล์ .dat หรือ CSV เพื่อตรวจสอบและบันทึกข้อมูลสแกนนิ้วเข้าสู่ระบบ',
+    href: '/import',
+    tone: 'from-purple-500 to-purple-600',
+  },
+  {
+    title: 'ข้อมูลการบันทึกเวลา',
+    description: 'ดูรายการบันทึกเวลาที่ถูกนำเข้า ตรวจสอบจำนวนครั้งสแกน และแหล่งที่มาของไฟล์',
+    href: '/attendance',
+    tone: 'from-orange-500 to-orange-600',
+  },
+  {
+    title: 'การคำนวณเวลาทำงาน',
+    description: 'เปรียบเทียบเวลาสแกนกับกะการทำงานเพื่อหาการมาสาย พักเกินเวลาหรือข้อมูลขาดหาย',
+    href: '/work-calculation',
+    tone: 'from-rose-500 to-rose-600',
+  },
+  {
+    title: 'รายงานและวิเคราะห์',
+    description: 'เตรียมข้อมูลสำหรับสร้างรายงานเพิ่มเติม เช่น สรุป OT การลาหรือประสิทธิภาพแต่ละแผนก',
+    href: '/reports',
+    tone: 'from-slate-500 to-slate-600',
+    disabled: true,
+  },
+];
 
-type WorkIndicators = {
-  totalLate: number;
-  totalBreakExceeded: number;
-  totalMissingCheckOut: number;
-  totalMissingCheckIn: number;
-  totalMissingBreak: number;
-  totalOvertime: number;
-  totalWorkingHours: number;
-};
-
-type WorkCalculationResponse = {
-  records: WorkCalculationRecord[];
-  indicators: WorkIndicators;
-  totalRecords: number;
-  generatedAt: string;
-};
-
-const thaiDate = (value: string) => {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat('th-TH', { dateStyle: 'medium' }).format(date);
-};
-
-const thaiDateTime = (value: string) => {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat('th-TH', { dateStyle: 'medium', timeStyle: 'short' }).format(date);
-};
-
-const formatMinutes = (value: number) => {
-  if (!value) return '-';
-  const hours = Math.floor(value / 60);
-  const minutes = value % 60;
-  return `${hours} ชม. ${minutes} นาที`;
-};
-
-const defaultDateRange = () => {
-  const today = new Date();
-  const start = new Date(today.getFullYear(), today.getMonth(), 1);
-  const format = (date: Date) => date.toISOString().split('T')[0];
-  return {
-    startDate: format(start),
-    endDate: format(today),
-  };
-};
-
-const statusBadges = [
-  { key: 'totalLate', label: 'มาสาย' },
-  { key: 'totalBreakExceeded', label: 'พักเกินเวลา' },
-  { key: 'totalMissingCheckIn', label: 'ลืมบันทึกเข้า' },
-  { key: 'totalMissingCheckOut', label: 'ลืมบันทึกออก' },
-  { key: 'totalMissingBreak', label: 'ไม่มีบันทึกพัก' },
-  { key: 'totalOvertime', label: 'มี OT' },
-] as const;
-
-export default function WorkCalculationPage() {
-  const defaults = defaultDateRange();
-  const [startDate, setStartDate] = useState(defaults.startDate);
-  const [endDate, setEndDate] = useState(defaults.endDate);
-  const [searchKeyword, setSearchKeyword] = useState('');
-
-  const [records, setRecords] = useState<WorkCalculationRecord[]>([]);
-  const [indicators, setIndicators] = useState<WorkIndicators | null>(null);
-  const [generatedAt, setGeneratedAt] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const filteredRecords = useMemo(() => records, [records]);
-
-  const fetchData = useCallback(async () => {
-    try {
-      setLoading(true);
-      setError(null);
-
-      const params = new URLSearchParams();
-      params.set('startDate', startDate);
-      params.set('endDate', endDate);
-      if (searchKeyword.trim()) {
-        params.set('search', searchKeyword.trim());
-      }
-
-      const response = await fetch(`/api/work-calculation?${params.toString()}`);
-      if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error(data?.message ?? 'ไม่สามารถคำนวณข้อมูลได้');
-      }
-
-      const data = (await response.json()) as WorkCalculationResponse;
-      setRecords(data.records);
-      setIndicators(data.indicators);
-      setGeneratedAt(data.generatedAt);
-    } catch (err) {
-      console.error('[WorkCalculation] error', err);
-      setError(err instanceof Error ? err.message : 'ไม่สามารถคำนวณข้อมูลได้');
-      setRecords([]);
-      setIndicators(null);
-      setGeneratedAt(null);
-    } finally {
-      setLoading(false);
-    }
-  }, [startDate, endDate, searchKeyword]);
-
-  useEffect(() => {
-    fetchData();
-  }, [fetchData]);
-
-  const handleSubmit = (event: React.FormEvent) => {
-    event.preventDefault();
-    fetchData();
-  };
-
+export default function HomePage() {
   return (
-    <div className="min-h-screen bg-slate-100 p-8">
-      <div className="mx-auto max-w-7xl space-y-8">
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div>
-            <h1 className="text-3xl font-bold text-slate-900">การคำนวณเวลาทำงาน</h1>
-            <p className="mt-2 text-sm text-slate-600">
-              ตรวจสอบข้อมูลการทำงานจากเครื่องสแกนนิ้ว เปรียบเทียบกับกะการทำงานเพื่อดูการมาสาย การพักเกินเวลา การลืมบันทึก และ OT
+    <div className="min-h-screen bg-slate-950 text-white">
+      <div className="relative overflow-hidden">
+        <div className="absolute inset-0 bg-gradient-to-br from-blue-500/30 via-purple-500/30 to-transparent blur-3xl" />
+        <div className="relative px-6 py-16 sm:px-12">
+          <div className="mx-auto max-w-5xl text-center">
+            <h1 className="text-3xl font-bold tracking-tight text-white sm:text-5xl">
+              ระบบบริหารเวลาทำงานและสแกนนิ้ว
+            </h1>
+            <p className="mt-6 text-base leading-7 text-slate-200 sm:text-lg">
+              ตั้งค่ากะการทำงาน นำเข้าข้อมูลสแกนนิ้ว และตรวจสอบความถูกต้องของบันทึกเวลาเพื่อเตรียมรายงานในขั้นตอนถัดไป
             </p>
-          </div>
-          <div className="flex flex-wrap gap-3">
-            <Link
-              href="/import"
-              className="rounded bg-blue-100 px-4 py-2 text-sm text-blue-700 hover:bg-blue-200"
-            >
-              นำเข้าข้อมูลสแกนนิ้ว
-            </Link>
-            <Link
-              href="/attendance"
-              className="rounded bg-gray-200 px-4 py-2 text-sm hover:bg-gray-300"
-            >
-              ดูข้อมูลบันทึกเวลา
-            </Link>
+            <div className="mt-8 flex flex-wrap justify-center gap-3">
+              <Link
+                href="/import"
+                className="rounded-full bg-white px-5 py-2 text-sm font-medium text-slate-900 shadow hover:bg-slate-100"
+              >
+                นำเข้าข้อมูลสแกนนิ้ว
+              </Link>
+              <Link
+                href="/work-calculation"
+                className="rounded-full border border-white/40 px-5 py-2 text-sm font-medium text-white hover:bg-white/10"
+              >
+                คำนวณเวลาทำงาน
+              </Link>
+            </div>
           </div>
         </div>
+      </div>
 
-        <section className="rounded-lg bg-white p-6 shadow">
-          <form onSubmit={handleSubmit} className="grid gap-4 md:grid-cols-[repeat(3,minmax(0,1fr))_auto]">
-            <div>
-              <label className="block text-sm font-medium text-slate-700">ตั้งแต่วันที่</label>
-              <input
-                type="date"
-                value={startDate}
-                onChange={(event) => setStartDate(event.target.value)}
-                max={endDate}
-                className="mt-1 w-full rounded-lg border px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500"
-                required
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700">ถึงวันที่</label>
-              <input
-                type="date"
-                value={endDate}
-                onChange={(event) => setEndDate(event.target.value)}
-                min={startDate}
-                className="mt-1 w-full rounded-lg border px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500"
-                required
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700">ค้นหาพนักงาน</label>
-              <input
-                type="text"
-                value={searchKeyword}
-                onChange={(event) => setSearchKeyword(event.target.value)}
-                placeholder="รหัสหรือชื่อพนักงาน"
-                className="mt-1 w-full rounded-lg border px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
-            <div className="flex items-end">
-              <button
-                type="submit"
-                disabled={loading}
-                className="rounded-lg bg-blue-600 px-6 py-2 text-sm text-white hover:bg-blue-700 disabled:opacity-60"
+      <div className="bg-slate-900/80 px-6 pb-20 sm:px-12">
+        <div className="mx-auto max-w-6xl">
+          <div className="mb-12">
+            <h2 className="text-2xl font-semibold text-white">เมนูหลัก</h2>
+            <p className="mt-2 text-sm text-slate-300">
+              เลือกฟังก์ชันที่ต้องการจัดการเพื่อทำงานกับข้อมูลพนักงาน กะการทำงาน และการบันทึกเวลา
+            </p>
+          </div>
+          <div className="grid gap-6 sm:grid-cols-2 xl:grid-cols-3">
+            {actions.map((action) => (
+              <div
+                key={action.title}
+                className={`group relative overflow-hidden rounded-2xl border border-white/10 bg-slate-900/60 p-6 shadow-lg transition hover:border-white/30 ${
+                  action.disabled ? 'opacity-60' : ''
+                }`}
               >
-                {loading ? 'กำลังคำนวณ...' : 'คำนวณใหม่'}
-              </button>
-            </div>
-          </form>
-        </section>
-
-        {error && (
-          <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
-            {error}
-          </div>
-        )}
-
-        {indicators && (
-          <section className="rounded-lg bg-white p-6 shadow">
-            <div className="flex flex-wrap items-center justify-between gap-4">
-              <div>
-                <h2 className="text-xl font-semibold text-slate-900">สรุปสถานะสำคัญ</h2>
-                {generatedAt && (
-                  <p className="text-xs text-slate-500">อัปเดตเมื่อ {thaiDateTime(generatedAt)}</p>
-                )}
-              </div>
-            </div>
-            <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {statusBadges.map((badge) => (
-                <div key={badge.key} className="rounded-lg border border-slate-200 p-4">
-                  <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
-                    {badge.label}
-                  </p>
-                  <p className="mt-2 text-2xl font-semibold text-slate-800">
-                    {indicators[badge.key].toLocaleString('th-TH')}
-                  </p>
+                <div className={`absolute inset-0 bg-gradient-to-br ${action.tone} opacity-0 transition group-hover:opacity-20`} />
+                <div className="relative space-y-3">
+                  <h3 className="text-lg font-semibold text-white">{action.title}</h3>
+                  <p className="text-sm leading-6 text-slate-300">{action.description}</p>
+                  <div>
+                    {action.disabled ? (
+                      <span className="inline-flex items-center text-xs font-medium text-slate-400">
+                        อยู่ระหว่างการพัฒนา
+                      </span>
+                    ) : (
+                      <Link
+                        href={action.href}
+                        className="inline-flex items-center text-sm font-medium text-blue-200 hover:text-white"
+                      >
+                        ไปยังหน้าจัดการ
+                        <span className="ml-1 text-base">→</span>
+                      </Link>
+                    )}
+                  </div>
                 </div>
-              ))}
-              <div className="rounded-lg border border-slate-200 p-4">
-                <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
-                  ชั่วโมงทำงานรวม (ประมาณ)
-                </p>
-                <p className="mt-2 text-2xl font-semibold text-slate-800">
-                  {indicators.totalWorkingHours.toFixed(2)} ชม.
-                </p>
               </div>
-            </div>
-          </section>
-        )}
-
-        <section className="rounded-lg bg-white shadow">
-          <div className="flex items-center justify-between border-b px-6 py-4">
-            <div>
-              <h2 className="text-xl font-semibold text-slate-900">รายละเอียดการคำนวณ</h2>
-              <p className="text-xs text-slate-500">
-                วันที่ {thaiDate(startDate)} ถึง {thaiDate(endDate)} • ทั้งหมด {filteredRecords.length.toLocaleString('th-TH')} บันทึก
-              </p>
-            </div>
-            {loading && <span className="text-sm text-slate-500">กำลังโหลดข้อมูล...</span>}
+            ))}
           </div>
-
-          {filteredRecords.length === 0 ? (
-            <div className="px-6 py-16 text-center text-slate-500">
-              <p>ยังไม่มีข้อมูลสำหรับเงื่อนไขที่เลือก</p>
-              <p className="mt-2 text-sm">
-                หากเพิ่งนำเข้าข้อมูลจากเครื่องสแกนนิ้ว กรุณาเลือกช่วงวันที่และคำนวณใหม่
-              </p>
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-gray-200 text-sm">
-                <thead className="bg-gray-50">
-                  <tr>
-                    <th className="px-4 py-3 text-left font-medium uppercase tracking-wide">วันที่</th>
-                    <th className="px-4 py-3 text-left font-medium uppercase tracking-wide">พนักงาน</th>
-                    <th className="px-4 py-3 text-left font-medium uppercase tracking-wide">กะ / เวลา</th>
-                    <th className="px-4 py-3 text-left font-medium uppercase tracking-wide">เวลาที่สแกน</th>
-                    <th className="px-4 py-3 text-left font-medium uppercase tracking-wide">สถานะ</th>
-                    <th className="px-4 py-3 text-left font-medium uppercase tracking-wide">หมายเหตุ</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100 bg-white">
-                  {filteredRecords.map((record) => (
-                    <tr key={record.id}>
-                      <td className="px-4 py-3 text-sm text-slate-700">{thaiDate(record.date)}</td>
-                      <td className="px-4 py-3 text-sm text-slate-800">
-                        <div className="font-mono text-xs text-slate-500">{record.employeeCode}</div>
-                        <div>{record.employeeName ?? '-'}</div>
-                        <div className="text-xs text-slate-500">{[record.zoneName, record.branchName, record.departmentName].filter(Boolean).join(' / ') || '-'}</div>
-                      </td>
-                      <td className="px-4 py-3 text-sm text-slate-700">
-                        <div>{record.shiftName ?? '-'}</div>
-                        <div className="text-xs text-slate-500">
-                          {record.shiftStart && record.shiftEnd ? `${record.shiftStart} - ${record.shiftEnd}` : '-'}
-                        </div>
-                      </td>
-                      <td className="px-4 py-3 text-sm text-slate-700">
-                        <div className="flex flex-wrap gap-2">
-                          {record.scanTimes.map((time) => (
-                            <span key={`${record.id}-${time}`} className="rounded bg-slate-100 px-2 py-1 font-mono text-xs">
-                              {time}
-                            </span>
-                          ))}
-                        </div>
-                      </td>
-                      <td className="px-4 py-3 text-sm text-slate-700">
-                        <ul className="space-y-1">
-                          {record.lateMinutes > 0 && (
-                            <li className="text-orange-600">มาสาย {record.lateMinutes} นาที</li>
-                          )}
-                          {record.breakExceededMinutes > 0 && (
-                            <li className="text-amber-600">พักเกินเวลา {record.breakExceededMinutes} นาที</li>
-                          )}
-                          {record.overtimeMinutes > 0 && (
-                            <li className="text-blue-600">OT {formatMinutes(record.overtimeMinutes)}</li>
-                          )}
-                          {record.missingCheckIn && <li className="text-red-600">ไม่มีบันทึกเข้า</li>}
-                          {record.missingCheckOut && <li className="text-red-600">ไม่มีบันทึกออก</li>}
-                          {record.missingBreak && <li className="text-slate-500">ไม่มีบันทึกพัก</li>}
-                          {record.lateMinutes === 0 &&
-                            record.breakExceededMinutes === 0 &&
-                            record.overtimeMinutes === 0 &&
-                            !record.missingCheckIn &&
-                            !record.missingCheckOut &&
-                            !record.missingBreak && (
-                              <li className="text-green-600">ปกติ</li>
-                            )}
-                        </ul>
-                      </td>
-                      <td className="px-4 py-3 text-sm text-slate-600">
-                        <div>นำเข้าจาก {record.importSource}</div>
-                        <div className="text-xs text-slate-400">เมื่อ {thaiDateTime(record.importedAt)}</div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
+        </div>
       </div>
     </div>
   );
