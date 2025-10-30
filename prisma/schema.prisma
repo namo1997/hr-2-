@@ -18,6 +18,7 @@ model Zone {
   updatedAt  DateTime  @updatedAt
   branches   Branch[]
   employees  Employee[]
+  shiftScopes ShiftScopeAssignment[]
 }
 
 model Branch {
@@ -30,6 +31,8 @@ model Branch {
   zone       Zone      @relation(fields: [zoneId], references: [id])
   departments Department[]
   employees   Employee[]
+  approvalAssignments ApprovalAssignment[]
+  shiftScopes ShiftScopeAssignment[]
 
   @@index([zoneId])
 }
@@ -43,6 +46,8 @@ model Department {
   branchId   Int
   branch     Branch    @relation(fields: [branchId], references: [id])
   employees  Employee[] @relation("DepartmentEmployees")
+  approvalAssignments ApprovalAssignment[]
+  shiftScopes ShiftScopeAssignment[]
 
   @@index([branchId])
 }
@@ -100,6 +105,7 @@ model Employee {
   zone          Zone?       @relation(fields: [zoneId], references: [id])
   branch        Branch?     @relation(fields: [branchId], references: [id])
   departmentRel Department? @relation("DepartmentEmployees", fields: [departmentId], references: [id])
+  approvalAssignments ApprovalAssignment[]
 }
 
 // ตารางความสัมพันธ์หัวหน้า-พนักงาน
@@ -116,30 +122,109 @@ model EmployeeManager {
 
 // ตารางกะทำงาน
 model Shift {
-  id              Int       @id @default(autoincrement())
-  name            String
-  startTime       String    // HH:mm format
-  endTime         String    // HH:mm format
-  breakType       BreakType
-  breakDuration   Int       // นาที
-  // สำหรับ FLEXIBLE break
-  flexBreakStart  String?   // HH:mm
-  flexBreakEnd    String?   // HH:mm
-  // สำหรับ FIXED break
-  fixedBreakStart String?   // HH:mm
-  lateGracePeriod Int       @default(0) // นาทีที่อนุโลมการมาสาย
-  overtimeStart   Int       @default(0) // นาทีหลังเลิกงานที่นับ OT
-  isActive        Boolean   @default(true)
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
-  
-  // ความสัมพันธ์
-  assignments     ShiftAssignment[]
+  id          Int                     @id @default(autoincrement())
+  name        String
+  description String?
+  isActive    Boolean                 @default(true)
+  createdAt   DateTime                @default(now())
+  updatedAt   DateTime                @updatedAt
+
+  days             ShiftDayConfig[]
+  scopeAssignments ShiftScopeAssignment[]
+  assignments      ShiftAssignment[]
 }
 
-enum BreakType {
-  FLEXIBLE  // พักยืดหยุ่น
-  FIXED     // พักตายตัว
+enum DayOfWeek {
+  MON
+  TUE
+  WED
+  THU
+  FRI
+  SAT
+  SUN
+}
+
+enum BreakRuleType {
+  DURATION
+  FIXED
+}
+
+model ShiftDayConfig {
+  id        Int         @id @default(autoincrement())
+  shiftId   Int
+  dayOfWeek DayOfWeek
+  startTime String      // HH:mm format
+  endTime   String      // HH:mm format
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  shift      Shift            @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+  breakRules ShiftBreakRule[]
+
+  @@unique([shiftId, dayOfWeek])
+}
+
+model ShiftBreakRule {
+  id          Int           @id @default(autoincrement())
+  dayConfigId Int
+  type        BreakRuleType
+  minutes     Int?
+  startTime   String?
+  endTime     String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  dayConfig ShiftDayConfig @relation(fields: [dayConfigId], references: [id], onDelete: Cascade)
+}
+
+enum ShiftScopeLevel {
+  ZONE
+  BRANCH
+  DEPARTMENT
+}
+
+model ShiftScopeAssignment {
+  id            Int              @id @default(autoincrement())
+  shiftId       Int
+  level         ShiftScopeLevel
+  zoneId        Int?
+  branchId      Int?
+  departmentId  Int?
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  shift      Shift      @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+  zone       Zone?      @relation(fields: [zoneId], references: [id])
+  branch     Branch?    @relation(fields: [branchId], references: [id])
+  department Department? @relation(fields: [departmentId], references: [id])
+
+  @@unique([shiftId, level, zoneId, branchId, departmentId])
+  @@index([level, zoneId])
+  @@index([level, branchId, departmentId])
+}
+
+enum ApprovalRole {
+  EXECUTIVE
+  MANAGER
+  DEPARTMENT_HEAD
+}
+
+model ApprovalAssignment {
+  id            Int           @id @default(autoincrement())
+  role          ApprovalRole
+  employeeId    Int
+  branchId      Int?
+  departmentId  Int?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  employee      Employee      @relation(fields: [employeeId], references: [id])
+  branch        Branch?       @relation(fields: [branchId], references: [id])
+  department    Department?   @relation(fields: [departmentId], references: [id])
+
+  @@unique([role, employeeId, branchId, departmentId])
+  @@index([role, branchId])
+  @@index([role, departmentId])
 }
 
 // ตารางการกำหนดกะให้พนักงาน
@@ -154,7 +239,7 @@ model ShiftAssignment {
   updatedAt   DateTime  @updatedAt
   
   employee    Employee  @relation(fields: [employeeId], references: [id])
-  shift       Shift     @relation(fields: [shiftId], references: [id])
+  shift       Shift     @relation(fields: [shiftId], references: [id], onDelete: Cascade)
   
   @@index([employeeId, startDate])
 }

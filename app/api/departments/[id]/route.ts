@@ -2,9 +2,21 @@ import { NextResponse } from "next/server";
 
 import { prisma } from "@/lib/prisma";
 
+const findDepartmentByParam = async (identifier: string) => {
+  const numericId = Number(identifier);
+  if (!Number.isNaN(numericId)) {
+    const department = await prisma.department.findUnique({ where: { id: numericId } });
+    if (department) {
+      return department;
+    }
+  }
+
+  return prisma.department.findUnique({ where: { code: identifier } });
+};
+
 export async function PUT(request: Request, { params }: { params: { id: string } }) {
-  const departmentId = Number(params.id);
-  if (Number.isNaN(departmentId)) {
+  const department = await findDepartmentByParam(params.id);
+  if (!department) {
     return NextResponse.json({ message: "ระบุรหัสแผนกไม่ถูกต้อง" }, { status: 400 });
   }
 
@@ -30,28 +42,28 @@ export async function PUT(request: Request, { params }: { params: { id: string }
     data.branchId = body.branchId;
   }
 
-  const department = await prisma.department.update({
-    where: { id: departmentId },
+  const updatedDepartment = await prisma.department.update({
+    where: { id: department.id },
     data,
   });
 
-  return NextResponse.json(department);
+  return NextResponse.json(updatedDepartment);
 }
 
 export async function DELETE(_: Request, { params }: { params: { id: string } }) {
-  const departmentId = Number(params.id);
-  if (Number.isNaN(departmentId)) {
+  const department = await findDepartmentByParam(params.id);
+  if (!department) {
     return NextResponse.json({ message: "ระบุรหัสแผนกไม่ถูกต้อง" }, { status: 400 });
   }
 
   await prisma.$transaction(async (tx) => {
     await tx.employee.updateMany({
-      where: { departmentId },
+      where: { departmentId: department.id },
       data: { departmentId: null },
     });
 
     await tx.department.delete({
-      where: { id: departmentId },
+      where: { id: department.id },
     });
   });
 

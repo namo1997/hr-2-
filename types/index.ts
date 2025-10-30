@@ -2,7 +2,9 @@
 
 export type UserRole = 'ADMIN' | 'MANAGER' | 'EMPLOYEE';
 
-export type BreakType = 'FLEXIBLE' | 'FIXED';
+export type DayOfWeek = 'MON' | 'TUE' | 'WED' | 'THU' | 'FRI' | 'SAT' | 'SUN';
+export type BreakRuleType = 'DURATION' | 'FIXED';
+export type ShiftScopeLevel = 'ZONE' | 'BRANCH' | 'DEPARTMENT';
 
 export type AttendanceStatus = 
   | 'PRESENT' 
@@ -35,19 +37,47 @@ export interface Employee {
   isActive: boolean;
 }
 
+export interface ShiftBreakRule {
+  id: number;
+  type: BreakRuleType;
+  minutes?: number | null;
+  startTime?: string | null;
+  endTime?: string | null;
+}
+
+export interface ShiftDayConfig {
+  id: number;
+  dayOfWeek: DayOfWeek;
+  startTime: string;
+  endTime: string;
+  breakRules: ShiftBreakRule[];
+}
+
+export interface ShiftScopeAssignment {
+  id: number;
+  level: ShiftScopeLevel;
+  zoneId?: number | null;
+  branchId?: number | null;
+  departmentId?: number | null;
+}
+
 export interface Shift {
   id: number;
   name: string;
-  startTime: string;
-  endTime: string;
-  breakType: BreakType;
-  breakDuration: number;
+  description?: string | null;
+  isActive: boolean;
+  days?: ShiftDayConfig[];
+  scopeAssignments?: ShiftScopeAssignment[];
+  // Legacy fields for compatibility with existing calculators
+  startTime?: string;
+  endTime?: string;
+  breakType?: BreakRuleType;
+  breakDuration?: number;
   flexBreakStart?: string;
   flexBreakEnd?: string;
   fixedBreakStart?: string;
-  lateGracePeriod: number;
-  overtimeStart: number;
-  isActive: boolean;
+  lateGracePeriod?: number;
+  overtimeStart?: number;
 }
 
 export interface ShiftAssignment {

@@ -19,6 +19,8 @@ This document helps a new AI contributor continue work on the project without lo
 
 - `Zone`, `Branch`, `Department` tables were added; each generates system codes (`ZONE-xxx`, `BRN-xxx`, `DEP-xxx`).
 - `Employee` now stores foreign keys (`zoneId`, `branchId`, `departmentId`) in addition to legacy `department` text.
+- `ApprovalAssignment` maps approvers to roles (EXECUTIVE, MANAGER, DEPARTMENT_HEAD) and enforces hierarchy constraints.
+- `Shift` now represents a weekly template with related `ShiftDayConfig`, `ShiftBreakRule` (DURATION vs FIXED), and `ShiftScopeAssignment` for zone/branch/department rules.
 - Prisma client helper lives in `lib/prisma.ts` using a `globalThis` singleton.
 
 ## API Endpoints
@@ -32,6 +34,12 @@ All routes under `app/api/...` use REST semantics and return JSON.
 - `GET /api/employees` — list employees with populated zone/branch/department.
 - `POST /api/employees`, `PUT /api/employees/[id]`, `DELETE /api/employees/[id]`.
 - `POST /api/employees/import` — accepts CSV (headers in Thai) to bulk create/update employees. Validates that referenced zone/branch/department codes exist and match hierarchy.
+- `GET /api/approval-assignments` — fetch approval hierarchy.
+- `POST /api/approval-assignments` — create/update approver assignments per role (with validation that employees belong to the selected branch/department).
+- `DELETE /api/approval-assignments/[id]` — remove an assignment.
+- `GET /api/shifts` — return shift templates with day configs, break rules, and scope assignments.
+- `POST /api/shifts` — create a new shift template (validates schedule + scope).
+- `PUT /api/shifts/[id]`, `DELETE /api/shifts/[id]` — update or remove existing templates.
 
 ## Frontend Flow (app/employees/page.tsx)
 
@@ -42,6 +50,8 @@ All routes under `app/api/...` use REST semantics and return JSON.
    - Step 3: Assign departments to branches.
    - Step 4: Add employees via form or upload CSV (`+ เพิ่มไฟล์พนักงาน`).
 3. CSV template is stored at `public/templates/employee-import-template.csv` and linked in the UI/README.
+4. New approval hierarchy section (Step 4) lets admins configure executives, managers per branch, and department heads per branch+department, backed by the API above.
+5. Shift management page consumes `/api/shifts` to configure weekly schedules (per-day start/end, flexible or fixed breaks) and assign templates to employees by zone/branch/department.
 
 ## Known Issues / TODO
 

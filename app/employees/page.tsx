@@ -56,6 +56,30 @@ interface EmployeeRecord {
   departmentCode: string;
 }
 
+type ApprovalRole = "EXECUTIVE" | "MANAGER" | "DEPARTMENT_HEAD";
+
+interface ApprovalAssignmentApiResponse {
+  id: number;
+  role: ApprovalRole;
+  employeeId: number;
+  branchId: number | null;
+  departmentId: number | null;
+  employee: EmployeeApiResponse;
+  branch?: Branch | null;
+  department?: Department | null;
+}
+
+interface ApprovalAssignmentRecord {
+  id: number;
+  role: ApprovalRole;
+  employeeId: number;
+  branchId: number | null;
+  departmentId: number | null;
+  employee: EmployeeRecord;
+  branch: Branch | null;
+  department: Department | null;
+}
+
 const normalizeEmployee = (employee: EmployeeApiResponse): EmployeeRecord => ({
   id: employee.id,
   employeeCode: employee.employeeCode,
@@ -71,6 +95,19 @@ const normalizeEmployee = (employee: EmployeeApiResponse): EmployeeRecord => ({
   departmentCode: employee.departmentRel?.code ?? '',
 });
 
+const normalizeAssignment = (
+  assignment: ApprovalAssignmentApiResponse,
+): ApprovalAssignmentRecord => ({
+  id: assignment.id,
+  role: assignment.role,
+  employeeId: assignment.employeeId,
+  branchId: assignment.branchId,
+  departmentId: assignment.departmentId,
+  employee: normalizeEmployee(assignment.employee),
+  branch: assignment.branch ?? null,
+  department: assignment.department ?? null,
+});
+
 export default function EmployeesPage() {
   const [zones, setZones] = useState<Zone[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
@@ -83,6 +120,9 @@ export default function EmployeesPage() {
   const [zoneForm, setZoneForm] = useState({ name: '' });
   const [branchForm, setBranchForm] = useState({ name: '', zoneId: '' });
   const [departmentForm, setDepartmentForm] = useState({ name: '', branchId: '' });
+  const [editingZoneId, setEditingZoneId] = useState<number | null>(null);
+  const [editingBranchId, setEditingBranchId] = useState<number | null>(null);
+  const [editingDepartmentId, setEditingDepartmentId] = useState<number | null>(null);
 
   const [showEmployeeForm, setShowEmployeeForm] = useState(false);
   const [editingEmployee, setEditingEmployee] = useState<EmployeeRecord | null>(null);
@@ -102,6 +142,16 @@ export default function EmployeesPage() {
   const [uploadingEmployees, setUploadingEmployees] = useState(false);
   const [importMessage, setImportMessage] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const [approvalAssignments, setApprovalAssignments] = useState<ApprovalAssignmentRecord[]>([]);
+  const [executiveForm, setExecutiveForm] = useState({ employeeId: '' });
+  const [managerForm, setManagerForm] = useState({ employeeId: '', branchId: '' });
+  const [departmentHeadForm, setDepartmentHeadForm] = useState({
+    employeeId: '',
+    branchId: '',
+    departmentId: '',
+  });
+  const [assignmentMessage, setAssignmentMessage] = useState<string | null>(null);
 
   const fetchJson = async <T,>(input: RequestInfo, init?: RequestInit) => {
     const response = await fetch(input, {
@@ -132,11 +182,18 @@ export default function EmployeesPage() {
       setLoading(true);
       setError(null);
 
-      const [zonesData, branchesData, departmentsData, employeesData] = await Promise.all([
+      const [
+        zonesData,
+        branchesData,
+        departmentsData,
+        employeesData,
+        assignmentsData,
+      ] = await Promise.all([
         fetchJson<Zone[]>('/api/zones'),
         fetchJson<Branch[]>('/api/branches'),
         fetchJson<Department[]>('/api/departments'),
         fetchJson<EmployeeApiResponse[]>('/api/employees'),
+        fetchJson<ApprovalAssignmentApiResponse[]>('/api/approval-assignments'),
       ]);
 
       setZones(
@@ -166,6 +223,7 @@ export default function EmployeesPage() {
       );
 
       setEmployees(employeesData.map((employee) => normalizeEmployee(employee)));
+      setApprovalAssignments(assignmentsData.map((assignment) => normalizeAssignment(assignment)));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'ไม่สามารถโหลดข้อมูลได้');
       console.error(err);
@@ -191,6 +249,21 @@ export default function EmployeesPage() {
     });
   };
 
+  const resetZoneForm = () => {
+    setZoneForm({ name: '' });
+    setEditingZoneId(null);
+  };
+
+  const resetBranchForm = () => {
+    setBranchForm({ name: '', zoneId: '' });
+    setEditingBranchId(null);
+  };
+
+  const resetDepartmentForm = () => {
+    setDepartmentForm({ name: '', branchId: '' });
+    setEditingDepartmentId(null);
+  };
+
   const handleZoneSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!zoneForm.name.trim()) {
@@ -199,12 +272,21 @@ export default function EmployeesPage() {
     }
 
     try {
-      const newZone = await fetchJson<Zone>('/api/zones', {
-        method: 'POST',
-        body: JSON.stringify({ name: zoneForm.name.trim() }),
-      });
-      setZones((prev) => [...prev, newZone]);
-      setZoneForm({ name: '' });
+      if (editingZoneId) {
+        const updatedZone = await fetchJson<Zone>(`/api/zones/${editingZoneId}`, {
+          method: 'PUT',
+          body: JSON.stringify({ name: zoneForm.name.trim() }),
+        });
+        setZones((prev) => prev.map((zone) => (zone.id === updatedZone.id ? updatedZone : zone)));
+        resetZoneForm();
+      } else {
+        const newZone = await fetchJson<Zone>('/api/zones', {
+          method: 'POST',
+          body: JSON.stringify({ name: zoneForm.name.trim() }),
+        });
+        setZones((prev) => [...prev, newZone]);
+        resetZoneForm();
+      }
     } catch (err) {
       alert(err instanceof Error ? err.message : 'ไม่สามารถบันทึกโซนได้');
     }
@@ -225,16 +307,31 @@ export default function EmployeesPage() {
     }
 
     try {
-      const newBranch = await fetchJson<Branch>('/api/branches', {
-        method: 'POST',
-        body: JSON.stringify({
-          name: branchForm.name.trim(),
-          zoneId,
-        }),
-      });
+      if (editingBranchId) {
+        const updatedBranch = await fetchJson<Branch>(`/api/branches/${editingBranchId}`, {
+          method: 'PUT',
+          body: JSON.stringify({
+            name: branchForm.name.trim(),
+            zoneId,
+          }),
+        });
 
-      setBranches((prev) => [...prev, newBranch]);
-      setBranchForm({ name: '', zoneId: '' });
+        setBranches((prev) =>
+          prev.map((branch) => (branch.id === updatedBranch.id ? updatedBranch : branch)),
+        );
+        resetBranchForm();
+      } else {
+        const newBranch = await fetchJson<Branch>('/api/branches', {
+          method: 'POST',
+          body: JSON.stringify({
+            name: branchForm.name.trim(),
+            zoneId,
+          }),
+        });
+
+        setBranches((prev) => [...prev, newBranch]);
+        resetBranchForm();
+      }
     } catch (err) {
       alert(err instanceof Error ? err.message : 'ไม่สามารถบันทึกสาขาได้');
     }
@@ -255,18 +352,92 @@ export default function EmployeesPage() {
     }
 
     try {
-      const newDepartment = await fetchJson<Department>('/api/departments', {
-        method: 'POST',
-        body: JSON.stringify({
-          name: departmentForm.name.trim(),
-          branchId,
-        }),
-      });
+      if (editingDepartmentId) {
+        const updatedDepartment = await fetchJson<Department>(
+          `/api/departments/${editingDepartmentId}`,
+          {
+            method: 'PUT',
+            body: JSON.stringify({
+              name: departmentForm.name.trim(),
+              branchId,
+            }),
+          },
+        );
 
-      setDepartments((prev) => [...prev, newDepartment]);
-      setDepartmentForm({ name: '', branchId: '' });
+        setDepartments((prev) =>
+          prev.map((department) =>
+            department.id === updatedDepartment.id ? updatedDepartment : department,
+          ),
+        );
+        resetDepartmentForm();
+      } else {
+        const newDepartment = await fetchJson<Department>('/api/departments', {
+          method: 'POST',
+          body: JSON.stringify({
+            name: departmentForm.name.trim(),
+            branchId,
+          }),
+        });
+
+        setDepartments((prev) => [...prev, newDepartment]);
+        resetDepartmentForm();
+      }
     } catch (err) {
       alert(err instanceof Error ? err.message : 'ไม่สามารถบันทึกแผนกได้');
+    }
+  };
+
+  const handleZoneDelete = async (zoneId: number) => {
+    if (!confirm('ยืนยันการลบโซนนี้? การลบจะลบสาขาและแผนกที่เกี่ยวข้องทั้งหมด')) {
+      return;
+    }
+    try {
+      await fetchJson<{ success: boolean }>(`/api/zones/${zoneId}`, {
+        method: 'DELETE',
+      });
+      await loadData();
+      if (editingZoneId === zoneId) {
+        resetZoneForm();
+      }
+      resetBranchForm();
+      resetDepartmentForm();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'ไม่สามารถลบโซนได้');
+    }
+  };
+
+  const handleBranchDelete = async (branchId: number) => {
+    if (!confirm('ยืนยันการลบสาขานี้? การลบจะลบแผนกที่เกี่ยวข้องทั้งหมด')) {
+      return;
+    }
+    try {
+      await fetchJson<{ success: boolean }>(`/api/branches/${branchId}`, {
+        method: 'DELETE',
+      });
+      await loadData();
+      if (editingBranchId === branchId) {
+        resetBranchForm();
+      }
+      resetDepartmentForm();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'ไม่สามารถลบสาขาได้');
+    }
+  };
+
+  const handleDepartmentDelete = async (departmentId: number) => {
+    if (!confirm('ยืนยันการลบแผนกนี้?')) {
+      return;
+    }
+    try {
+      await fetchJson<{ success: boolean }>(`/api/departments/${departmentId}`, {
+        method: 'DELETE',
+      });
+      await loadData();
+      if (editingDepartmentId === departmentId) {
+        resetDepartmentForm();
+      }
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'ไม่สามารถลบแผนกได้');
     }
   };
 
@@ -392,6 +563,94 @@ export default function EmployeesPage() {
     }
   };
 
+  const handleAddExecutive = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!executiveForm.employeeId) {
+      alert('กรุณาเลือกพนักงานที่จะตั้งเป็นผู้บริหาร');
+      return;
+    }
+    setAssignmentMessage(null);
+    try {
+      const assignment = await fetchJson<ApprovalAssignmentApiResponse>('/api/approval-assignments', {
+        method: 'POST',
+        body: JSON.stringify({
+          role: 'EXECUTIVE',
+          employeeId: Number(executiveForm.employeeId),
+        }),
+      });
+      setApprovalAssignments((prev) => [...prev, normalizeAssignment(assignment)]);
+      setExecutiveForm({ employeeId: '' });
+      setAssignmentMessage('บันทึกผู้บริหารเรียบร้อยแล้ว');
+    } catch (err) {
+      setAssignmentMessage(err instanceof Error ? err.message : 'ไม่สามารถบันทึกข้อมูลได้');
+    }
+  };
+
+  const handleAddManager = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!managerForm.branchId || !managerForm.employeeId) {
+      alert('กรุณาเลือกสาขาและพนักงานที่จะตั้งเป็นผู้จัดการ');
+      return;
+    }
+    setAssignmentMessage(null);
+    try {
+      const assignment = await fetchJson<ApprovalAssignmentApiResponse>('/api/approval-assignments', {
+        method: 'POST',
+        body: JSON.stringify({
+          role: 'MANAGER',
+          branchId: Number(managerForm.branchId),
+          employeeId: Number(managerForm.employeeId),
+        }),
+      });
+      setApprovalAssignments((prev) => [...prev, normalizeAssignment(assignment)]);
+      setManagerForm({ branchId: '', employeeId: '' });
+      setAssignmentMessage('บันทึกผู้จัดการสาขาเรียบร้อยแล้ว');
+    } catch (err) {
+      setAssignmentMessage(err instanceof Error ? err.message : 'ไม่สามารถบันทึกข้อมูลได้');
+    }
+  };
+
+  const handleAddDepartmentHead = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!departmentHeadForm.branchId || !departmentHeadForm.departmentId || !departmentHeadForm.employeeId) {
+      alert('กรุณาเลือกสาขา แผนก และพนักงานให้ครบ');
+      return;
+    }
+    setAssignmentMessage(null);
+    try {
+      const assignment = await fetchJson<ApprovalAssignmentApiResponse>('/api/approval-assignments', {
+        method: 'POST',
+        body: JSON.stringify({
+          role: 'DEPARTMENT_HEAD',
+          branchId: Number(departmentHeadForm.branchId),
+          departmentId: Number(departmentHeadForm.departmentId),
+          employeeId: Number(departmentHeadForm.employeeId),
+        }),
+      });
+      setApprovalAssignments((prev) => [...prev, normalizeAssignment(assignment)]);
+      setDepartmentHeadForm({ branchId: '', departmentId: '', employeeId: '' });
+      setAssignmentMessage('บันทึกหัวหน้าแผนกเรียบร้อยแล้ว');
+    } catch (err) {
+      setAssignmentMessage(err instanceof Error ? err.message : 'ไม่สามารถบันทึกข้อมูลได้');
+    }
+  };
+
+  const handleRemoveAssignment = async (assignmentId: number) => {
+    if (!confirm('ยืนยันการยกเลิกการตั้งค่านี้?')) {
+      return;
+    }
+    setAssignmentMessage(null);
+    try {
+      await fetchJson<{ success: boolean }>(`/api/approval-assignments/${assignmentId}`, {
+        method: 'DELETE',
+      });
+      setApprovalAssignments((prev) => prev.filter((assignment) => assignment.id !== assignmentId));
+      setAssignmentMessage('ลบรายการเรียบร้อยแล้ว');
+    } catch (err) {
+      setAssignmentMessage(err instanceof Error ? err.message : 'ไม่สามารถลบข้อมูลได้');
+    }
+  };
+
   const readyToAddEmployee = zones.length > 0 && branches.length > 0 && departments.length > 0;
 
   const availableBranches = useMemo(() => {
@@ -414,6 +673,63 @@ export default function EmployeesPage() {
   const getBranchName = (code: string) => branches.find((branch) => branch.code === code)?.name ?? '-';
   const getDepartmentName = (code: string) =>
     departments.find((department) => department.code === code)?.name ?? '-';
+
+  const executives = useMemo(
+    () => approvalAssignments.filter((assignment) => assignment.role === 'EXECUTIVE'),
+    [approvalAssignments],
+  );
+
+  const managersAssignments = useMemo(
+    () => approvalAssignments.filter((assignment) => assignment.role === 'MANAGER'),
+    [approvalAssignments],
+  );
+
+  const departmentHeadAssignments = useMemo(
+    () => approvalAssignments.filter((assignment) => assignment.role === 'DEPARTMENT_HEAD'),
+    [approvalAssignments],
+  );
+
+  const availableExecutiveEmployees = useMemo(
+    () =>
+      employees.filter(
+        (employee) =>
+          !executives.some((assignment) => assignment.employeeId === employee.id),
+      ),
+    [employees, executives],
+  );
+
+  const managerSelectedBranchId = managerForm.branchId ? Number(managerForm.branchId) : null;
+  const managerEligibleEmployees = useMemo(() => {
+    if (!managerSelectedBranchId) {
+      return [];
+    }
+    return employees.filter((employee) => employee.branchId === managerSelectedBranchId);
+  }, [employees, managerSelectedBranchId]);
+
+  const departmentHeadSelectedBranchId = departmentHeadForm.branchId
+    ? Number(departmentHeadForm.branchId)
+    : null;
+  const departmentHeadSelectedDepartmentId = departmentHeadForm.departmentId
+    ? Number(departmentHeadForm.departmentId)
+    : null;
+
+  const departmentOptionsForHead = useMemo(() => {
+    if (!departmentHeadSelectedBranchId) {
+      return [];
+    }
+    return departments.filter((department) => department.branchId === departmentHeadSelectedBranchId);
+  }, [departments, departmentHeadSelectedBranchId]);
+
+  const departmentHeadEligibleEmployees = useMemo(() => {
+    if (!departmentHeadSelectedBranchId || !departmentHeadSelectedDepartmentId) {
+      return [];
+    }
+    return employees.filter(
+      (employee) =>
+        employee.branchId === departmentHeadSelectedBranchId &&
+        employee.departmentId === departmentHeadSelectedDepartmentId,
+    );
+  }, [departmentHeadSelectedBranchId, departmentHeadSelectedDepartmentId, employees]);
 
   return (
     <div className="min-h-screen bg-gray-100 p-8">
@@ -452,7 +768,12 @@ export default function EmployeesPage() {
           <div className="p-6 space-y-6">
             <form onSubmit={handleZoneSubmit} className="grid gap-4 md:grid-cols-[1fr_auto]">
               <div>
-                <label className="block text-sm font-medium mb-2">ชื่อโซน *</label>
+                <div className="flex items-center justify-between">
+                  <label className="block text-sm font-medium mb-2">ชื่อโซน *</label>
+                  {editingZoneId && (
+                    <span className="text-xs text-blue-600">กำลังแก้ไข: {zones.find((zone) => zone.id === editingZoneId)?.code}</span>
+                  )}
+                </div>
                 <input
                   type="text"
                   value={zoneForm.name}
@@ -462,13 +783,22 @@ export default function EmployeesPage() {
                   required
                 />
               </div>
-              <div className="flex items-end">
+              <div className="flex items-end gap-2">
                 <button
                   type="submit"
                   className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
                 >
-                  บันทึกโซน
+                  {editingZoneId ? 'บันทึกการแก้ไข' : 'บันทึกโซน'}
                 </button>
+                {editingZoneId && (
+                  <button
+                    type="button"
+                    onClick={resetZoneForm}
+                    className="px-4 py-2 bg-gray-200 rounded-lg hover:bg-gray-300 text-sm"
+                  >
+                    ยกเลิก
+                  </button>
+                )}
               </div>
             </form>
 
@@ -478,12 +808,13 @@ export default function EmployeesPage() {
                   <tr>
                     <th className="px-6 py-3 text-left text-xs font-medium uppercase">รหัสโซน</th>
                     <th className="px-6 py-3 text-left text-xs font-medium uppercase">ชื่อโซน</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium uppercase">การจัดการ</th>
                   </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200">
                   {zones.length === 0 ? (
                     <tr>
-                      <td className="px-6 py-4 text-sm text-gray-500" colSpan={2}>
+                      <td className="px-6 py-4 text-sm text-gray-500" colSpan={3}>
                         ยังไม่มีข้อมูลโซน
                       </td>
                     </tr>
@@ -492,6 +823,25 @@ export default function EmployeesPage() {
                       <tr key={zone.id}>
                         <td className="px-6 py-4 text-sm font-medium">{zone.code}</td>
                         <td className="px-6 py-4 text-sm">{zone.name}</td>
+                        <td className="px-6 py-4 text-sm">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setZoneForm({ name: zone.name });
+                              setEditingZoneId(zone.id);
+                            }}
+                            className="text-blue-600 hover:text-blue-800 mr-4"
+                          >
+                            แก้ไข
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleZoneDelete(zone.id)}
+                            className="text-red-600 hover:text-red-800"
+                          >
+                            ลบ
+                          </button>
+                        </td>
                       </tr>
                     ))
                   )}
@@ -511,7 +861,14 @@ export default function EmployeesPage() {
           <div className="p-6 space-y-6">
             <form onSubmit={handleBranchSubmit} className="grid gap-4 md:grid-cols-[1fr_1fr_auto]">
               <div>
-                <label className="block text-sm font-medium mb-2">โซน *</label>
+                <div className="flex items-center justify-between">
+                  <label className="block text-sm font-medium mb-2">โซน *</label>
+                  {editingBranchId && (
+                    <span className="text-xs text-blue-600">
+                      กำลังแก้ไข: {branches.find((branch) => branch.id === editingBranchId)?.code}
+                    </span>
+                  )}
+                </div>
                 <select
                   value={branchForm.zoneId}
                   onChange={(event) =>
@@ -542,14 +899,23 @@ export default function EmployeesPage() {
                   disabled={zones.length === 0}
                 />
               </div>
-              <div className="flex items-end">
+              <div className="flex items-end gap-2">
                 <button
                   type="submit"
                   className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
                   disabled={zones.length === 0}
                 >
-                  บันทึกสาขา
+                  {editingBranchId ? 'บันทึกการแก้ไข' : 'บันทึกสาขา'}
                 </button>
+                {editingBranchId && (
+                  <button
+                    type="button"
+                    onClick={resetBranchForm}
+                    className="px-4 py-2 bg-gray-200 rounded-lg hover:bg-gray-300 text-sm"
+                  >
+                    ยกเลิก
+                  </button>
+                )}
               </div>
             </form>
 
@@ -560,12 +926,13 @@ export default function EmployeesPage() {
                     <th className="px-6 py-3 text-left text-xs font-medium uppercase">รหัสสาขา</th>
                     <th className="px-6 py-3 text-left text-xs font-medium uppercase">ชื่อสาขา</th>
                     <th className="px-6 py-3 text-left text-xs font-medium uppercase">โซนที่เชื่อม</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium uppercase">การจัดการ</th>
                   </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200">
                   {branches.length === 0 ? (
                     <tr>
-                      <td className="px-6 py-4 text-sm text-gray-500" colSpan={3}>
+                      <td className="px-6 py-4 text-sm text-gray-500" colSpan={4}>
                         ยังไม่มีข้อมูลสาขา
                       </td>
                     </tr>
@@ -578,6 +945,25 @@ export default function EmployeesPage() {
                           <td className="px-6 py-4 text-sm">{branch.name}</td>
                           <td className="px-6 py-4 text-sm">
                             {zone ? `${zone.code} • ${zone.name}` : '-'}
+                          </td>
+                          <td className="px-6 py-4 text-sm">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setBranchForm({ name: branch.name, zoneId: String(branch.zoneId) });
+                                setEditingBranchId(branch.id);
+                              }}
+                              className="text-blue-600 hover:text-blue-800 mr-4"
+                            >
+                              แก้ไข
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleBranchDelete(branch.id)}
+                              className="text-red-600 hover:text-red-800"
+                            >
+                              ลบ
+                            </button>
                           </td>
                         </tr>
                       );
@@ -602,7 +988,14 @@ export default function EmployeesPage() {
               className="grid gap-4 md:grid-cols-[1fr_1fr_auto]"
             >
               <div>
-                <label className="block text-sm font-medium mb-2">สาขา *</label>
+                <div className="flex items-center justify-between">
+                  <label className="block text-sm font-medium mb-2">สาขา *</label>
+                  {editingDepartmentId && (
+                    <span className="text-xs text-blue-600">
+                      กำลังแก้ไข: {departments.find((department) => department.id === editingDepartmentId)?.code}
+                    </span>
+                  )}
+                </div>
                 <select
                   value={departmentForm.branchId}
                   onChange={(event) =>
@@ -633,14 +1026,23 @@ export default function EmployeesPage() {
                   disabled={branches.length === 0}
                 />
               </div>
-              <div className="flex items-end">
+              <div className="flex items-end gap-2">
                 <button
                   type="submit"
                   className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
                   disabled={branches.length === 0}
                 >
-                  บันทึกแผนก
+                  {editingDepartmentId ? 'บันทึกการแก้ไข' : 'บันทึกแผนก'}
                 </button>
+                {editingDepartmentId && (
+                  <button
+                    type="button"
+                    onClick={resetDepartmentForm}
+                    className="px-4 py-2 bg-gray-200 rounded-lg hover:bg-gray-300 text-sm"
+                  >
+                    ยกเลิก
+                  </button>
+                )}
               </div>
             </form>
 
@@ -652,12 +1054,13 @@ export default function EmployeesPage() {
                     <th className="px-6 py-3 text-left text-xs font-medium uppercase">ชื่อแผนก</th>
                     <th className="px-6 py-3 text-left text-xs font-medium uppercase">สาขา</th>
                     <th className="px-6 py-3 text-left text-xs font-medium uppercase">โซน</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium uppercase">การจัดการ</th>
                   </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200">
                   {departments.length === 0 ? (
                     <tr>
-                      <td className="px-6 py-4 text-sm text-gray-500" colSpan={4}>
+                      <td className="px-6 py-4 text-sm text-gray-500" colSpan={5}>
                         ยังไม่มีข้อมูลแผนก
                       </td>
                     </tr>
@@ -675,6 +1078,25 @@ export default function EmployeesPage() {
                           <td className="px-6 py-4 text-sm">
                             {zone ? `${zone.code} • ${zone.name}` : '-'}
                           </td>
+                          <td className="px-6 py-4 text-sm">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setDepartmentForm({ name: department.name, branchId: String(department.branchId) });
+                                setEditingDepartmentId(department.id);
+                              }}
+                              className="text-blue-600 hover:text-blue-800 mr-4"
+                            >
+                              แก้ไข
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDepartmentDelete(department.id)}
+                              className="text-red-600 hover:text-red-800"
+                            >
+                              ลบ
+                            </button>
+                          </td>
                         </tr>
                       );
                     })
@@ -688,7 +1110,370 @@ export default function EmployeesPage() {
         <section className="bg-white rounded-lg shadow">
           <div className="p-6 border-b flex flex-wrap items-center justify-between gap-4">
             <div>
-              <h2 className="text-xl font-bold">ขั้นที่ 4: เพิ่มพนักงาน</h2>
+              <h2 className="text-xl font-bold">ขั้นที่ 4: ตั้งค่าผู้อนุมัติ</h2>
+              <p className="text-sm mt-2 text-gray-600">
+                กำหนดบทบาทการอนุมัติสำหรับการลา การขอทำ OT และการสลับวันหยุดตามโครงสร้าง 3 ระดับ
+              </p>
+              <ul className="text-sm text-gray-600 mt-2 list-disc list-inside space-y-1">
+                <li>ผู้บริหารอนุมัติผู้จัดการ</li>
+                <li>ผู้จัดการอนุมัติพนักงานในสาขาตนเอง</li>
+                <li>หัวหน้าแผนกอนุมัติพนักงานทั่วไปในแผนก (และส่งต่อให้ผู้จัดการ)</li>
+              </ul>
+            </div>
+          </div>
+          <div className="p-6 space-y-8">
+            <div className="grid gap-6 md:grid-cols-2">
+              <div className="border rounded-lg p-6">
+                <h3 className="text-lg font-semibold mb-4">ผู้บริหาร (Executive)</h3>
+                <form onSubmit={handleAddExecutive} className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium mb-2">เลือกพนักงาน</label>
+                    <select
+                      value={executiveForm.employeeId}
+                      onChange={(event) =>
+                        setExecutiveForm({ employeeId: event.target.value })
+                      }
+                      className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
+                      required
+                      disabled={availableExecutiveEmployees.length === 0}
+                    >
+                      <option value="">เลือกพนักงาน</option>
+                      {availableExecutiveEmployees.map((employee) => (
+                        <option key={employee.id} value={employee.id}>
+                          {employee.employeeCode} - {employee.name}
+                        </option>
+                      ))}
+                    </select>
+                    {availableExecutiveEmployees.length === 0 && (
+                      <p className="text-xs text-gray-500 mt-2">
+                        * ไม่มีพนักงานที่ยังไม่ได้ตั้งเป็นผู้บริหาร หากต้องการเปลี่ยนให้ลบรายการเดิมก่อน
+                      </p>
+                    )}
+                  </div>
+                  <button
+                    type="submit"
+                    className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-300"
+                    disabled={availableExecutiveEmployees.length === 0 || !executiveForm.employeeId}
+                  >
+                    บันทึกผู้บริหาร
+                  </button>
+                </form>
+                <div className="mt-6">
+                  <h4 className="text-sm font-semibold mb-2">รายการผู้บริหาร</h4>
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full divide-y divide-gray-200 text-sm">
+                      <thead className="bg-gray-50">
+                        <tr>
+                          <th className="px-4 py-2 text-left font-medium uppercase">พนักงาน</th>
+                          <th className="px-4 py-2 text-left font-medium uppercase">การจัดการ</th>
+                        </tr>
+                      </thead>
+                      <tbody className="bg-white divide-y divide-gray-200">
+                        {executives.length === 0 ? (
+                          <tr>
+                            <td className="px-4 py-3 text-gray-500" colSpan={2}>
+                              ยังไม่มีผู้บริหารที่ตั้งค่าไว้
+                            </td>
+                          </tr>
+                        ) : (
+                          executives.map((assignment) => (
+                            <tr key={assignment.id}>
+                              <td className="px-4 py-3">
+                                {assignment.employee.employeeCode} • {assignment.employee.name}
+                              </td>
+                              <td className="px-4 py-3">
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveAssignment(assignment.id)}
+                                  className="text-red-600 hover:text-red-800"
+                                >
+                                  ลบ
+                                </button>
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+
+              <div className="border rounded-lg p-6">
+                <h3 className="text-lg font-semibold mb-4">ผู้จัดการสาขา (Manager)</h3>
+                <form onSubmit={handleAddManager} className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium mb-2">เลือกสาขา</label>
+                    <select
+                      value={managerForm.branchId}
+                      onChange={(event) =>
+                        setManagerForm({
+                          branchId: event.target.value,
+                          employeeId: '',
+                        })
+                      }
+                      className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
+                      required
+                    >
+                      <option value="">เลือกสาขา</option>
+                      {branches.map((branch) => (
+                        <option key={branch.id} value={branch.id}>
+                          {branch.code} - {branch.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-2">เลือกพนักงาน</label>
+                    <select
+                      value={managerForm.employeeId}
+                      onChange={(event) =>
+                        setManagerForm((prev) => ({ ...prev, employeeId: event.target.value }))
+                      }
+                      className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
+                      required
+                      disabled={!managerForm.branchId || managerEligibleEmployees.length === 0}
+                    >
+                      <option value="">เลือกพนักงาน</option>
+                      {managerEligibleEmployees.map((employee) => (
+                        <option key={employee.id} value={employee.id}>
+                          {employee.employeeCode} - {employee.name}
+                        </option>
+                      ))}
+                    </select>
+                    {managerForm.branchId && managerEligibleEmployees.length === 0 && (
+                      <p className="text-xs text-gray-500 mt-2">
+                        * ไม่มีพนักงานในสาขานี้ กรุณาเพิ่มพนักงานหรือเลือกสาขาอื่น
+                      </p>
+                    )}
+                  </div>
+                  <button
+                    type="submit"
+                    className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-300"
+                    disabled={
+                      !managerForm.branchId ||
+                      !managerForm.employeeId ||
+                      managerEligibleEmployees.length === 0
+                    }
+                  >
+                    บันทึกผู้จัดการสาขา
+                  </button>
+                </form>
+                <div className="mt-6">
+                  <h4 className="text-sm font-semibold mb-2">รายการผู้จัดการ</h4>
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full divide-y divide-gray-200 text-sm">
+                      <thead className="bg-gray-50">
+                        <tr>
+                          <th className="px-4 py-2 text-left font-medium uppercase">สาขา</th>
+                          <th className="px-4 py-2 text-left font-medium uppercase">พนักงาน</th>
+                          <th className="px-4 py-2 text-left font-medium uppercase">การจัดการ</th>
+                        </tr>
+                      </thead>
+                      <tbody className="bg-white divide-y divide-gray-200">
+                        {managersAssignments.length === 0 ? (
+                          <tr>
+                            <td className="px-4 py-3 text-gray-500" colSpan={3}>
+                              ยังไม่มีผู้จัดการที่ตั้งค่าไว้
+                            </td>
+                          </tr>
+                        ) : (
+                          managersAssignments.map((assignment) => (
+                            <tr key={assignment.id}>
+                              <td className="px-4 py-3">
+                                {assignment.branch
+                                  ? `${assignment.branch.code} • ${assignment.branch.name}`
+                                  : '-'}
+                              </td>
+                              <td className="px-4 py-3">
+                                {assignment.employee.employeeCode} • {assignment.employee.name}
+                              </td>
+                              <td className="px-4 py-3">
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveAssignment(assignment.id)}
+                                  className="text-red-600 hover:text-red-800"
+                                >
+                                  ลบ
+                                </button>
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="border rounded-lg p-6">
+              <h3 className="text-lg font-semibold mb-4">หัวหน้าแผนก (Department Head)</h3>
+              <form onSubmit={handleAddDepartmentHead} className="grid gap-4 md:grid-cols-3">
+                <div>
+                  <label className="block text-sm font-medium mb-2">สาขา *</label>
+                  <select
+                    value={departmentHeadForm.branchId}
+                    onChange={(event) =>
+                      setDepartmentHeadForm({
+                        branchId: event.target.value,
+                        departmentId: '',
+                        employeeId: '',
+                      })
+                    }
+                    className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
+                    required
+                  >
+                    <option value="">เลือกสาขา</option>
+                    {branches.map((branch) => (
+                      <option key={branch.id} value={branch.id}>
+                        {branch.code} - {branch.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium mb-2">แผนก *</label>
+                  <select
+                    value={departmentHeadForm.departmentId}
+                    onChange={(event) =>
+                      setDepartmentHeadForm((prev) => ({
+                        ...prev,
+                        departmentId: event.target.value,
+                        employeeId: '',
+                      }))
+                    }
+                    className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
+                    required
+                    disabled={departmentOptionsForHead.length === 0}
+                  >
+                    <option value="">เลือกแผนก</option>
+                    {departmentOptionsForHead.map((department) => (
+                      <option key={department.id} value={department.id}>
+                        {department.code} - {department.name}
+                      </option>
+                    ))}
+                  </select>
+                  {departmentHeadForm.branchId && departmentOptionsForHead.length === 0 && (
+                    <p className="text-xs text-gray-500 mt-2">
+                      * สาขานี้ยังไม่มีแผนก กรุณาเพิ่มแผนกก่อน
+                    </p>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium mb-2">พนักงาน *</label>
+                  <select
+                    value={departmentHeadForm.employeeId}
+                    onChange={(event) =>
+                      setDepartmentHeadForm((prev) => ({ ...prev, employeeId: event.target.value }))
+                    }
+                    className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
+                    required
+                    disabled={departmentHeadEligibleEmployees.length === 0}
+                  >
+                    <option value="">เลือกพนักงาน</option>
+                    {departmentHeadEligibleEmployees.map((employee) => (
+                      <option key={employee.id} value={employee.id}>
+                        {employee.employeeCode} - {employee.name}
+                      </option>
+                    ))}
+                  </select>
+                  {departmentHeadForm.departmentId && departmentHeadEligibleEmployees.length === 0 && (
+                    <p className="text-xs text-gray-500 mt-2">
+                      * ยังไม่มีพนักงานในแผนกนี้ กรุณาเพิ่มพนักงานก่อน
+                    </p>
+                  )}
+                </div>
+
+                <div className="md:col-span-3">
+                  <button
+                    type="submit"
+                    className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-300"
+                    disabled={
+                      !departmentHeadForm.branchId ||
+                      !departmentHeadForm.departmentId ||
+                      !departmentHeadForm.employeeId ||
+                      departmentHeadEligibleEmployees.length === 0
+                    }
+                  >
+                    บันทึกหัวหน้าแผนก
+                  </button>
+                </div>
+              </form>
+
+              <div className="mt-6">
+                <h4 className="text-sm font-semibold mb-2">รายการหัวหน้าแผนก</h4>
+                <div className="overflow-x-auto">
+                  <table className="min-w-full divide-y divide-gray-200 text-sm">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-4 py-2 text-left font-medium uppercase">สาขา</th>
+                        <th className="px-4 py-2 text-left font-medium uppercase">แผนก</th>
+                        <th className="px-4 py-2 text-left font-medium uppercase">พนักงาน</th>
+                        <th className="px-4 py-2 text-left font-medium uppercase">การจัดการ</th>
+                      </tr>
+                    </thead>
+                    <tbody className="bg-white divide-y divide-gray-200">
+                      {departmentHeadAssignments.length === 0 ? (
+                        <tr>
+                          <td className="px-4 py-3 text-gray-500" colSpan={4}>
+                            ยังไม่มีหัวหน้าแผนกที่ตั้งค่าไว้
+                          </td>
+                        </tr>
+                      ) : (
+                        departmentHeadAssignments.map((assignment) => (
+                          <tr key={assignment.id}>
+                            <td className="px-4 py-3">
+                              {assignment.branch
+                                ? `${assignment.branch.code} • ${assignment.branch.name}`
+                                : '-'}
+                            </td>
+                            <td className="px-4 py-3">
+                              {assignment.department
+                                ? `${assignment.department.code} • ${assignment.department.name}`
+                                : '-'}
+                            </td>
+                            <td className="px-4 py-3">
+                              {assignment.employee.employeeCode} • {assignment.employee.name}
+                            </td>
+                            <td className="px-4 py-3">
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveAssignment(assignment.id)}
+                                className="text-red-600 hover:text-red-800"
+                              >
+                                ลบ
+                              </button>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            {assignmentMessage && (
+              <div
+                className={`rounded-lg border p-3 text-sm ${
+                  assignmentMessage.includes('เรียบร้อย')
+                    ? 'bg-green-50 border-green-200 text-green-800'
+                    : 'bg-red-50 border-red-200 text-red-800'
+                }`}
+              >
+                {assignmentMessage}
+              </div>
+            )}
+          </div>
+        </section>
+
+        <section className="bg-white rounded-lg shadow">
+          <div className="p-6 border-b flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <h2 className="text-xl font-bold">ขั้นที่ 5: เพิ่มพนักงาน</h2>
               <p className="text-sm mt-2 text-gray-600">
                 ระบบจะเชื่อมโยงพนักงานกับโซน สาขา และแผนกตามรหัสที่สร้างไว้แล้ว
               </p>
