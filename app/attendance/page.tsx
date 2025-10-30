@@ -1,171 +1,501 @@
-// app/attendance/page.tsx - หน้าบันทึกเวลาทำงาน
-
 'use client';
 
-import { useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
+
+type AttendanceStatus =
+  | 'PRESENT'
+  | 'ABSENT'
+  | 'LEAVE'
+  | 'PENDING_LEAVE'
+  | 'HOLIDAY'
+  | 'DAY_OFF';
+
+type AttendanceStatusCounts = Record<AttendanceStatus, number>;
 
 interface AttendanceRecord {
   id: number;
   date: string;
+  employeeId: number;
   employeeCode: string;
   employeeName: string;
-  department: string;
-  shift: string;
-  checkIn?: string;
-  breakOut?: string;
-  breakIn?: string;
-  checkOut?: string;
-  status: 'PRESENT' | 'ABSENT' | 'LEAVE' | 'LATE';
+  departmentId: number | null;
+  departmentName: string | null;
+  branchId: number | null;
+  branchName: string | null;
+  zoneId: number | null;
+  zoneName: string | null;
+  status: AttendanceStatus;
   isLate: boolean;
   lateMinutes: number;
-  workHours: number;
-  overtimeHours: number;
+  isEarlyLeave: boolean;
+  earlyMinutes: number;
+  workMinutes: number;
+  overtimeMinutes: number;
+  checkIn?: string | null;
+  breakOut?: string | null;
+  breakIn?: string | null;
+  checkOut?: string | null;
+  notes?: string | null;
 }
 
+interface AttendanceSummary {
+  totalRecords: number;
+  distinctEmployees: number;
+  statusCounts: Record<string, number>;
+  lateCount: number;
+  earlyLeaveCount: number;
+  totalWorkMinutes: number;
+  totalOvertimeMinutes: number;
+}
+
+interface DepartmentOption {
+  id: number;
+  code: string;
+  name: string;
+}
+
+interface AttendanceResponse {
+  records: AttendanceRecord[];
+  summary: AttendanceSummary;
+  generatedAt: string;
+}
+
+const getDefaultDateRange = () => {
+  const today = new Date();
+  const start = new Date(today.getFullYear(), today.getMonth(), 1);
+  const format = (date: Date) => date.toISOString().split('T')[0];
+  return {
+    startDate: format(start),
+    endDate: format(today),
+  };
+};
+
+const formatDate = (value: string) => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return new Intl.DateTimeFormat('th-TH', {
+    dateStyle: 'medium',
+  }).format(date);
+};
+
+const formatMinutesToHours = (minutes: number) => {
+  if (!minutes) return '0 ชม.';
+  const hours = minutes / 60;
+  return `${hours.toFixed(2)} ชม.`;
+};
+
+const formatStatusLabel = (status: AttendanceStatus) => {
+  switch (status) {
+    case 'PRESENT':
+      return 'มาทำงาน';
+    case 'ABSENT':
+      return 'ขาดงาน';
+    case 'LEAVE':
+      return 'ลา';
+    case 'PENDING_LEAVE':
+      return 'รออนุมัติลา';
+    case 'HOLIDAY':
+      return 'วันหยุด';
+    case 'DAY_OFF':
+      return 'วันหยุดประจำ';
+    default:
+      return status;
+  }
+};
+
+const statusBadgeStyles: Record<AttendanceStatus, string> = {
+  PRESENT: 'bg-green-100 text-green-700',
+  ABSENT: 'bg-red-100 text-red-700',
+  LEAVE: 'bg-yellow-100 text-yellow-700',
+  PENDING_LEAVE: 'bg-indigo-100 text-indigo-700',
+  HOLIDAY: 'bg-blue-100 text-blue-700',
+  DAY_OFF: 'bg-slate-100 text-slate-600',
+};
+
+const attendanceTabs: { key: AttendanceStatus | 'ALL'; label: string }[] = [
+  { key: 'ALL', label: 'ทั้งหมด' },
+  { key: 'PRESENT', label: 'มาทำงาน' },
+  { key: 'ABSENT', label: 'ขาดงาน' },
+  { key: 'LEAVE', label: 'ลา' },
+  { key: 'PENDING_LEAVE', label: 'รออนุมัติลา' },
+  { key: 'HOLIDAY', label: 'วันหยุด' },
+  { key: 'DAY_OFF', label: 'วันหยุดประจำ' },
+];
+
 export default function AttendancePage() {
-  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
-  const [selectedDepartment, setSelectedDepartment] = useState('ALL');
+  const defaultRange = getDefaultDateRange();
+  const [startDate, setStartDate] = useState(defaultRange.startDate);
+  const [endDate, setEndDate] = useState(defaultRange.endDate);
+  const [departmentId, setDepartmentId] = useState<string>('ALL');
+  const [searchKeyword, setSearchKeyword] = useState('');
+  const [statusFilter, setStatusFilter] = useState<AttendanceStatus | 'ALL'>('ALL');
+
+  const [departments, setDepartments] = useState<DepartmentOption[]>([]);
   const [records, setRecords] = useState<AttendanceRecord[]>([]);
+  const [summary, setSummary] = useState<AttendanceSummary | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<string | null>(null);
 
-  const departments = ['ALL', 'ส่วนหน้า', 'ส่วนครัว', 'ส่วนบริการ'];
+  const filteredRecords = useMemo(() => {
+    if (statusFilter === 'ALL') {
+      return records;
+    }
+    return records.filter((record) => record.status === statusFilter);
+  }, [records, statusFilter]);
 
-  const statusColors = {
-    PRESENT: 'bg-green-100 text-green-800',
-    ABSENT: 'bg-red-100 text-red-800',
-    LEAVE: 'bg-yellow-100 text-yellow-800',
-    LATE: 'bg-orange-100 text-orange-800',
+  const filteredSummary = useMemo(() => {
+    if (!summary) return null;
+    if (statusFilter === 'ALL') return summary;
+
+    const filtered = records.filter((record) => record.status === statusFilter);
+    const statusCounts: AttendanceStatusCounts = {};
+    let lateCount = 0;
+    let earlyLeaveCount = 0;
+    let totalWorkMinutes = 0;
+    let totalOvertimeMinutes = 0;
+
+    filtered.forEach((record) => {
+      statusCounts[record.status] = (statusCounts[record.status] ?? 0) + 1;
+      totalWorkMinutes += record.workMinutes;
+      totalOvertimeMinutes += record.overtimeMinutes;
+      if (record.isLate) lateCount += 1;
+      if (record.isEarlyLeave) earlyLeaveCount += 1;
+    });
+
+    return {
+      totalRecords: filtered.length,
+      distinctEmployees: new Set(filtered.map((record) => record.employeeId)).size,
+      statusCounts,
+      lateCount,
+      earlyLeaveCount,
+      totalWorkMinutes,
+      totalOvertimeMinutes,
+    } satisfies AttendanceSummary;
+  }, [summary, records, statusFilter]);
+
+  const fetchDepartments = useCallback(async () => {
+    try {
+      const response = await fetch('/api/departments');
+      if (!response.ok) {
+        throw new Error('ไม่สามารถโหลดรายชื่อแผนกได้');
+      }
+      const data = (await response.json()) as DepartmentOption[];
+      setDepartments(data);
+    } catch (err) {
+      console.error('[AttendancePage] load departments error', err);
+    }
+  }, []);
+
+  const fetchAttendance = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError(null);
+
+      const params = new URLSearchParams();
+      params.set('startDate', startDate);
+      params.set('endDate', endDate);
+      if (departmentId && departmentId !== 'ALL') {
+        params.set('departmentId', departmentId);
+      }
+      if (searchKeyword.trim()) {
+        params.set('search', searchKeyword.trim());
+      }
+
+      const response = await fetch(`/api/attendance?${params.toString()}`);
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data?.message ?? 'ไม่สามารถโหลดข้อมูลการบันทึกเวลาได้');
+      }
+
+      const data = (await response.json()) as AttendanceResponse;
+      setRecords(data.records);
+      setSummary(data.summary);
+      setLastUpdated(data.generatedAt);
+    } catch (err) {
+      console.error('[AttendancePage] load attendance error', err);
+      setError(err instanceof Error ? err.message : 'ไม่สามารถโหลดข้อมูลการบันทึกเวลาได้');
+      setRecords([]);
+      setSummary(null);
+      setLastUpdated(null);
+    } finally {
+      setLoading(false);
+    }
+  }, [startDate, endDate, departmentId, searchKeyword]);
+
+  useEffect(() => {
+    fetchDepartments();
+    fetchAttendance();
+  }, [fetchDepartments, fetchAttendance]);
+
+  const handleSubmit = (event: React.FormEvent) => {
+    event.preventDefault();
+    fetchAttendance();
   };
 
-  const statusLabels = {
-    PRESENT: 'มาทำงาน',
-    ABSENT: 'ขาดงาน',
-    LEAVE: 'ลา',
-    LATE: 'มาสาย',
-  };
+  const summaryCards = useMemo(() => {
+    if (!filteredSummary) return [];
+    return [
+      {
+        label: 'บันทึกทั้งหมด',
+        value: filteredSummary.totalRecords.toLocaleString('th-TH'),
+        tone: 'text-slate-700',
+        highlight: 'bg-slate-100',
+      },
+      {
+        label: 'จำนวนพนักงาน',
+        value: filteredSummary.distinctEmployees.toLocaleString('th-TH'),
+        tone: 'text-slate-700',
+        highlight: 'bg-slate-100',
+      },
+      {
+        label: 'มาทำงาน',
+        value: (filteredSummary.statusCounts.PRESENT ?? 0).toLocaleString('th-TH'),
+        tone: 'text-green-700',
+        highlight: 'bg-green-100',
+      },
+      {
+        label: 'มาสาย',
+        value: filteredSummary.lateCount.toLocaleString('th-TH'),
+        tone: 'text-orange-700',
+        highlight: 'bg-orange-100',
+      },
+      {
+        label: 'ลา',
+        value: (filteredSummary.statusCounts.LEAVE ?? 0).toLocaleString('th-TH'),
+        tone: 'text-yellow-700',
+        highlight: 'bg-yellow-100',
+      },
+      {
+        label: 'ขาดงาน',
+        value: (filteredSummary.statusCounts.ABSENT ?? 0).toLocaleString('th-TH'),
+        tone: 'text-red-700',
+        highlight: 'bg-red-100',
+      },
+      {
+        label: 'เวลาทำงานรวม',
+        value: formatMinutesToHours(filteredSummary.totalWorkMinutes),
+        tone: 'text-blue-700',
+        highlight: 'bg-blue-100',
+      },
+      {
+        label: 'OT รวม',
+        value: formatMinutesToHours(filteredSummary.totalOvertimeMinutes),
+        tone: 'text-purple-700',
+        highlight: 'bg-purple-100',
+      },
+    ];
+  }, [filteredSummary]);
 
   return (
     <div className="min-h-screen bg-gray-100 p-8">
-      <div className="max-w-7xl mx-auto">
-        <div className="flex justify-between items-center mb-8">
-          <h1 className="text-3xl font-bold">บันทึกเวลาทำงาน</h1>
-          <Link href="/" className="px-6 py-2 bg-gray-200 rounded-lg hover:bg-gray-300">
+      <div className="mx-auto max-w-7xl space-y-8">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <h1 className="text-3xl font-bold text-slate-900">ข้อมูลการบันทึกเวลา</h1>
+            <p className="mt-2 text-sm text-slate-600">
+              ตรวจสอบการเข้า-ออกงานที่นำเข้าจากเครื่องสแกนนิ้ว สามารถกรองตามช่วงเวลา แผนก และค้นหาพนักงานได้
+            </p>
+          </div>
+          <Link href="/" className="rounded bg-gray-200 px-6 py-2 text-sm hover:bg-gray-300">
             กลับหน้าหลัก
           </Link>
         </div>
 
-        {/* ตัวกรอง */}
-        <div className="bg-white p-6 rounded-lg shadow mb-6">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <section className="rounded-lg bg-white p-6 shadow">
+          <form onSubmit={handleSubmit} className="grid gap-4 md:grid-cols-4">
             <div>
-              <label className="block text-sm font-medium mb-2">เลือกวันที่</label>
+              <label className="block text-sm font-medium text-slate-700">ตั้งแต่วันที่</label>
               <input
                 type="date"
-                value={selectedDate}
-                onChange={(e) => setSelectedDate(e.target.value)}
-                className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
+                value={startDate}
+                onChange={(event) => setStartDate(event.target.value)}
+                max={endDate}
+                className="mt-1 w-full rounded-lg border px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500"
+                required
               />
             </div>
-
             <div>
-              <label className="block text-sm font-medium mb-2">เลือกแผนก</label>
+              <label className="block text-sm font-medium text-slate-700">ถึงวันที่</label>
+              <input
+                type="date"
+                value={endDate}
+                onChange={(event) => setEndDate(event.target.value)}
+                min={startDate}
+                className="mt-1 w-full rounded-lg border px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500"
+                required
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700">แผนก</label>
               <select
-                value={selectedDepartment}
-                onChange={(e) => setSelectedDepartment(e.target.value)}
-                className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
+                value={departmentId}
+                onChange={(event) => setDepartmentId(event.target.value)}
+                className="mt-1 w-full rounded-lg border px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500"
               >
-                {departments.map(dept => (
-                  <option key={dept} value={dept}>{dept === 'ALL' ? 'ทุกแผนก' : dept}</option>
+                <option value="ALL">ทุกแผนก</option>
+                {departments.map((department) => (
+                  <option key={department.id} value={department.id}>
+                    {department.code} - {department.name}
+                  </option>
                 ))}
               </select>
             </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700">ค้นหาพนักงาน</label>
+              <div className="mt-1 flex items-center gap-2">
+                <input
+                  type="text"
+                  value={searchKeyword}
+                  onChange={(event) => setSearchKeyword(event.target.value)}
+                  placeholder="รหัสหรือชื่อพนักงาน"
+                  className="w-full rounded-lg border px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500"
+                />
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="whitespace-nowrap rounded-lg bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700 disabled:opacity-60"
+                >
+                  {loading ? 'กำลังค้นหา...' : 'ค้นหา'}
+                </button>
+              </div>
+            </div>
+          </form>
+        </section>
 
-            <div className="flex items-end">
-              <button
-                onClick={() => {/* ค้นหาข้อมูล */}}
-                className="w-full px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-              >
-                ค้นหา
-              </button>
+        <section className="rounded-lg bg-white p-6 shadow">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <h2 className="text-xl font-semibold text-slate-900">สรุปภาพรวม</h2>
+              {lastUpdated && (
+                <p className="text-xs text-slate-500">อัปเดตล่าสุด: {formatDate(lastUpdated)}</p>
+              )}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {attendanceTabs.map((tab) => (
+                <button
+                  key={tab.key}
+                  type="button"
+                  onClick={() => setStatusFilter(tab.key)}
+                  className={`rounded-full px-4 py-1 text-sm ${
+                    statusFilter === tab.key
+                      ? 'bg-blue-600 text-white shadow'
+                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
             </div>
           </div>
-        </div>
 
-        {/* สถิติสรุป */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-          <div className="bg-white p-4 rounded-lg shadow">
-            <h3 className="text-gray-500 text-sm">มาทำงาน</h3>
-            <p className="text-2xl font-bold text-green-600">{records.filter(r => r.status === 'PRESENT').length}</p>
-          </div>
-          <div className="bg-white p-4 rounded-lg shadow">
-            <h3 className="text-gray-500 text-sm">มาสาย</h3>
-            <p className="text-2xl font-bold text-orange-600">{records.filter(r => r.isLate).length}</p>
-          </div>
-          <div className="bg-white p-4 rounded-lg shadow">
-            <h3 className="text-gray-500 text-sm">ลา</h3>
-            <p className="text-2xl font-bold text-yellow-600">{records.filter(r => r.status === 'LEAVE').length}</p>
-          </div>
-          <div className="bg-white p-4 rounded-lg shadow">
-            <h3 className="text-gray-500 text-sm">ขาดงาน</h3>
-            <p className="text-2xl font-bold text-red-600">{records.filter(r => r.status === 'ABSENT').length}</p>
-          </div>
-        </div>
+          {error && (
+            <div className="mt-4 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+              {error}
+            </div>
+          )}
 
-        {/* ตารางแสดงบันทึกเวลา */}
-        <div className="bg-white rounded-lg shadow">
-          <div className="p-6 border-b">
-            <h2 className="text-xl font-bold">รายละเอียดการเข้า-ออกงาน วันที่ {selectedDate}</h2>
+          {summaryCards.length > 0 && (
+            <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              {summaryCards.map((card) => (
+                <div
+                  key={card.label}
+                  className={`rounded-lg p-4 shadow-sm ${card.highlight}`}
+                >
+                  <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                    {card.label}
+                  </p>
+                  <p className={`mt-2 text-2xl font-semibold ${card.tone}`}>{card.value}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section className="rounded-lg bg-white shadow">
+          <div className="flex items-center justify-between border-b px-6 py-4">
+            <div>
+              <h2 className="text-xl font-semibold text-slate-900">รายละเอียดการบันทึกเวลา</h2>
+              <p className="text-xs text-slate-500">
+                วันที่ {formatDate(startDate)} ถึง {formatDate(endDate)}
+              </p>
+            </div>
+            {loading && <span className="text-sm text-slate-500">กำลังโหลดข้อมูล...</span>}
           </div>
-          
-          {records.length === 0 ? (
-            <div className="p-12 text-center text-gray-500">
-              <p>ยังไม่มีข้อมูลการเข้า-ออกงานสำหรับวันที่เลือก</p>
-              <p className="text-sm mt-2">กรุณานำเข้าข้อมูลจากเครื่องสแกนนิ้วก่อน</p>
+
+          {filteredRecords.length === 0 ? (
+            <div className="px-6 py-16 text-center text-slate-500">
+              <p>ยังไม่มีข้อมูลการบันทึกเวลาสำหรับเงื่อนไขที่เลือก</p>
+              <p className="mt-2 text-sm">
+                หากเพิ่งนำเข้าข้อมูลจากเครื่องสแกนนิ้ว ลองตรวจสอบช่วงวันที่ หรือกลับไปที่หน้าการนำเข้าข้อมูลเพื่ออัปโหลดไฟล์
+              </p>
             </div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-gray-200">
+              <table className="min-w-full divide-y divide-gray-200 text-sm">
                 <thead className="bg-gray-50">
                   <tr>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">รหัส</th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">ชื่อ-สกุล</th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">แผนก</th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">กะ</th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">เข้า</th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">พักออก</th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">พักเข้า</th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">เลิก</th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">สถานะ</th>
-                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">ชม.ทำงาน</th>
-                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">OT</th>
+                    <th className="px-4 py-3 text-left font-medium uppercase tracking-wide">วันที่</th>
+                    <th className="px-4 py-3 text-left font-medium uppercase tracking-wide">รหัสพนักงาน</th>
+                    <th className="px-4 py-3 text-left font-medium uppercase tracking-wide">ชื่อพนักงาน</th>
+                    <th className="px-4 py-3 text-left font-medium uppercase tracking-wide">โซน / สาขา / แผนก</th>
+                    <th className="px-4 py-3 text-left font-medium uppercase tracking-wide">เข้า</th>
+                    <th className="px-4 py-3 text-left font-medium uppercase tracking-wide">พักออก</th>
+                    <th className="px-4 py-3 text-left font-medium uppercase tracking-wide">พักเข้า</th>
+                    <th className="px-4 py-3 text-left font-medium uppercase tracking-wide">เลิก</th>
+                    <th className="px-4 py-3 text-left font-medium uppercase tracking-wide">สถานะ</th>
+                    <th className="px-4 py-3 text-right font-medium uppercase tracking-wide">ชั่วโมงทำงาน</th>
+                    <th className="px-4 py-3 text-right font-medium uppercase tracking-wide">OT</th>
+                    <th className="px-4 py-3 text-left font-medium uppercase tracking-wide">หมายเหตุ</th>
                   </tr>
                 </thead>
-                <tbody className="bg-white divide-y divide-gray-200">
-                  {records.map((record) => (
+                <tbody className="divide-y divide-gray-100 bg-white">
+                  {filteredRecords.map((record) => (
                     <tr key={record.id}>
-                      <td className="px-4 py-3 text-sm">{record.employeeCode}</td>
-                      <td className="px-4 py-3 text-sm font-medium">{record.employeeName}</td>
-                      <td className="px-4 py-3 text-sm">{record.department}</td>
-                      <td className="px-4 py-3 text-sm">{record.shift}</td>
+                      <td className="px-4 py-3 text-sm text-slate-700">{formatDate(record.date)}</td>
+                      <td className="px-4 py-3 text-sm font-mono text-slate-700">{record.employeeCode}</td>
+                      <td className="px-4 py-3 text-sm text-slate-700">{record.employeeName}</td>
+                      <td className="px-4 py-3 text-sm text-slate-600">
+                        {[record.zoneName, record.branchName, record.departmentName]
+                          .filter(Boolean)
+                          .join(' / ') || '-'}
+                      </td>
                       <td className="px-4 py-3 text-sm font-mono">
-                        {record.checkIn || '-'}
+                        {record.checkIn ?? '-'}
                         {record.isLate && (
-                          <span className="ml-2 text-xs text-red-600">({record.lateMinutes}น)</span>
+                          <span className="ml-2 text-xs font-medium text-red-600">
+                            +{record.lateMinutes} นาที
+                          </span>
                         )}
                       </td>
-                      <td className="px-4 py-3 text-sm font-mono">{record.breakOut || '-'}</td>
-                      <td className="px-4 py-3 text-sm font-mono">{record.breakIn || '-'}</td>
-                      <td className="px-4 py-3 text-sm font-mono">{record.checkOut || '-'}</td>
+                      <td className="px-4 py-3 text-sm font-mono">{record.breakOut ?? '-'}</td>
+                      <td className="px-4 py-3 text-sm font-mono">{record.breakIn ?? '-'}</td>
+                      <td className="px-4 py-3 text-sm font-mono">
+                        {record.checkOut ?? '-'}
+                        {record.isEarlyLeave && (
+                          <span className="ml-2 text-xs font-medium text-orange-600">
+                            -{record.earlyMinutes} นาที
+                          </span>
+                        )}
+                      </td>
                       <td className="px-4 py-3 text-sm">
-                        <span className={`px-2 py-1 rounded text-xs ${statusColors[record.status]}`}>
-                          {statusLabels[record.status]}
+                        <span
+                          className={`rounded-full px-2 py-1 text-xs font-medium ${statusBadgeStyles[record.status]}`}
+                        >
+                          {formatStatusLabel(record.status)}
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-sm text-right">{record.workHours.toFixed(2)}</td>
-                      <td className="px-4 py-3 text-sm text-right">
-                        {record.overtimeHours > 0 ? (
-                          <span className="text-blue-600 font-medium">{record.overtimeHours.toFixed(2)}</span>
-                        ) : '-'}
+                      <td className="px-4 py-3 text-right text-sm text-slate-700">
+                        {(record.workMinutes / 60).toFixed(2)}
+                      </td>
+                      <td className="px-4 py-3 text-right text-sm text-slate-700">
+                        {record.overtimeMinutes > 0 ? (record.overtimeMinutes / 60).toFixed(2) : '-'}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-slate-600">
+                        {record.notes ?? '-'}
                       </td>
                     </tr>
                   ))}
@@ -173,19 +503,7 @@ export default function AttendancePage() {
               </table>
             </div>
           )}
-        </div>
-
-        {/* คำอธิบาย */}
-        <div className="mt-6 bg-blue-50 border border-blue-200 rounded-lg p-4">
-          <h3 className="font-bold text-blue-900 mb-2">💡 คำอธิบาย:</h3>
-          <ul className="text-sm text-blue-800 space-y-1">
-            <li>• <strong>เข้า:</strong> เวลาสแกนเข้าทำงาน (ถ้ามีเลขสีแดงแสดงว่ามาสายกี่นาที)</li>
-            <li>• <strong>พักออก/พักเข้า:</strong> เวลาพักกลางวัน (สำหรับกะที่พักยืดหยุ่น)</li>
-            <li>• <strong>เลิก:</strong> เวลาสแกนออกจากงาน</li>
-            <li>• <strong>ชม.ทำงาน:</strong> จำนวนชั่วโมงทำงานจริง (หักเวลาพักแล้ว)</li>
-            <li>• <strong>OT:</strong> จำนวนชั่วโมง Overtime (ทำงานเกินเวลาที่กำหนด)</li>
-          </ul>
-        </div>
+        </section>
       </div>
     </div>
   );
