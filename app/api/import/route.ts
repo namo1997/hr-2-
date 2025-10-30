@@ -1,49 +1,89 @@
-// app/api/import/route.ts - API สำหรับ import ไฟล์ CSV
+import { NextRequest, NextResponse } from "next/server";
 
-import { NextRequest, NextResponse } from 'next/server';
+import {
+  parseFingerprintDat,
+  summarizeFingerprintRecords,
+} from "@/lib/fingerprint-parser";
+
+interface ParsedCsvRecord {
+  raw: string[];
+}
+
+interface ParsedFileResponse<T> {
+  name: string;
+  type: "fingerprint-dat" | "csv";
+  totalRecords: number;
+  sampleRecords: T[];
+  summary?: unknown;
+}
+
+const SAMPLE_LIMIT = 200;
+
+const parseCsv = (content: string): ParsedCsvRecord[] => {
+  const rows = content
+    .split(/\r?\n/)
+    .map((row) => row.trim())
+    .filter(Boolean);
+
+  return rows.map((row) => ({ raw: row.split(/[,\t]/).map((value) => value.trim()) }));
+};
+
+const createFingerprintResponse = (name: string, content: string) => {
+  const records = parseFingerprintDat(content);
+  const summary = summarizeFingerprintRecords(records);
+  return {
+    name,
+    type: "fingerprint-dat" as const,
+    totalRecords: records.length,
+    sampleRecords: records.slice(0, SAMPLE_LIMIT),
+    summary,
+  } satisfies ParsedFileResponse<typeof records[number]>;
+};
+
+const createCsvResponse = (name: string, content: string) => {
+  const records = parseCsv(content);
+  return {
+    name,
+    type: "csv" as const,
+    totalRecords: records.length,
+    sampleRecords: records.slice(0, SAMPLE_LIMIT),
+  } satisfies ParsedFileResponse<ParsedCsvRecord>;
+};
 
 export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
-    const file = formData.get('file') as File;
-    
-    if (!file) {
-      return NextResponse.json(
-        { error: 'ไม่พบไฟล์' },
-        { status: 400 }
-      );
+    const files = formData.getAll("files").filter((value): value is File => value instanceof File);
+
+    if (files.length === 0) {
+      return NextResponse.json({ message: "กรุณาเลือกไฟล์อย่างน้อย 1 ไฟล์" }, { status: 400 });
     }
-    
-    // อ่านไฟล์ CSV
-    const text = await file.text();
-    const rows = text.split('\n').filter(row => row.trim());
-    
-    const attendanceData = rows.map(row => {
-      const cols = row.split(',');
-      return {
-        employeeCode: cols[0],
-        employeeName: cols[1],
-        department: cols[2],
-        date: cols[3],
-        scanCount: parseInt(cols[4]),
-        scans: cols[5],
-      };
-    });
-    
-    // บันทึกลง database (ตอนนี้ return ข้อมูลก่อน)
-    // TODO: บันทึกลง Prisma database
-    
+
+    const parsedFiles: Array<ParsedFileResponse<unknown>> = [];
+
+    // Process sequentially to avoid large memory spikes
+    for (const file of files) {
+      const content = await file.text();
+      if (/\.dat$/i.test(file.name)) {
+        parsedFiles.push(createFingerprintResponse(file.name, content));
+      } else {
+        parsedFiles.push(createCsvResponse(file.name, content));
+      }
+    }
+
+    const totalRecords = parsedFiles.reduce((sum, file) => sum + file.totalRecords, 0);
+
     return NextResponse.json({
       success: true,
-      message: `นำเข้าข้อมูลสำเร็จ ${attendanceData.length} รายการ`,
-      data: attendanceData,
+      totalFiles: parsedFiles.length,
+      totalRecords,
+      files: parsedFiles,
     });
-    
   } catch (error) {
-    console.error('Error importing CSV:', error);
+    console.error("Error importing attendance log:", error);
     return NextResponse.json(
-      { error: 'เกิดข้อผิดพลาดในการนำเข้าข้อมูล' },
-      { status: 500 }
+      { message: "เกิดข้อผิดพลาดในการนำเข้าข้อมูล" },
+      { status: 500 },
     );
   }
 }

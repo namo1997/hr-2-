@@ -40,6 +40,7 @@ All routes under `app/api/...` use REST semantics and return JSON.
 - `GET /api/shifts` — return shift templates with day configs, break rules, and scope assignments.
 - `POST /api/shifts` — create a new shift template (validates schedule + scope).
 - `PUT /api/shifts/[id]`, `DELETE /api/shifts/[id]` — update or remove existing templates.
+- `POST /api/import` — parse fingerprint `.dat` logs or CSV previews for validation (currently returns summary/sample only).
 
 ## Frontend Flow (app/employees/page.tsx)
 
@@ -52,6 +53,7 @@ All routes under `app/api/...` use REST semantics and return JSON.
 3. CSV template is stored at `public/templates/employee-import-template.csv` and linked in the UI/README.
 4. New approval hierarchy section (Step 4) lets admins configure executives, managers per branch, and department heads per branch+department, backed by the API above.
 5. Shift management page consumes `/api/shifts` to configure weekly schedules (per-day start/end, flexible or fixed breaks) and assign templates to employees by zone/branch/department.
+6. Import page (`/import`) uploads fingerprint logs (`.dat`) or CSV files, parses them via `/api/import`, and shows summaries/sample rows for review.
 
 ## Known Issues / TODO
 
