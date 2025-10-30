@@ -30,6 +30,7 @@ type ParsedFile =
       totalRecords: number;
       sampleRecords: ParsedFingerprintRecord[];
       summary: FingerprintSummary[];
+      persistedRecords?: number;
     }
   | {
       name: string;
@@ -37,12 +38,14 @@ type ParsedFile =
       totalRecords: number;
       sampleRecords: ParsedCsvRecord[];
       summary?: never;
+      persistedRecords?: number;
     };
 
 interface ImportResponse {
   success: boolean;
   totalFiles: number;
   totalRecords: number;
+  totalPersisted?: number;
   files: ParsedFile[];
 }
 
@@ -290,6 +293,11 @@ export default function ImportPage() {
                   พบข้อมูลทั้งหมด {result.totalRecords.toLocaleString('th-TH')} รายการ จากไฟล์{' '}
                   {result.totalFiles.toLocaleString('th-TH')} ไฟล์
                 </p>
+                {typeof result.totalPersisted === 'number' && (
+                  <p className="text-xs text-gray-500">
+                    บันทึกเข้าสู่ฐานข้อมูล {result.totalPersisted.toLocaleString('th-TH')} รายการ (เฉพาะไฟล์ .dat)
+                  </p>
+                )}
               </div>
             </div>
 
@@ -302,6 +310,11 @@ export default function ImportPage() {
                       ประเภท: {file.type === 'fingerprint-dat' ? 'ไฟล์สแกนนิ้ว (.dat)' : 'ไฟล์ CSV'} •{' '}
                       ทั้งหมด {file.totalRecords.toLocaleString('th-TH')} แถว
                     </p>
+                    {typeof file.persistedRecords === 'number' && (
+                      <p className="text-xs text-gray-500">
+                        บันทึกเข้าสู่ฐานข้อมูล {file.persistedRecords.toLocaleString('th-TH')} รายการ
+                      </p>
+                    )}
                   </div>
                 </div>
 

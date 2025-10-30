@@ -16,6 +16,12 @@ export interface FingerprintSummary {
   scans: number;
 }
 
+export interface AggregatedFingerprintRecord {
+  employeeCode: string;
+  date: string;
+  times: string[];
+}
+
 const trimElectric = (value: string) => value.replace(/^\uFEFF/, "").trim();
 
 export const parseFingerprintDat = (content: string): FingerprintRecord[] => {
@@ -63,4 +69,33 @@ export const summarizeFingerprintRecords = (
     userId,
     scans,
   }));
+};
+
+export const aggregateFingerprintRecords = (
+  records: FingerprintRecord[],
+): AggregatedFingerprintRecord[] => {
+  const buckets = new Map<string, Set<string>>();
+
+  records.forEach((record) => {
+    if (!record.userId || !record.date) {
+      return;
+    }
+    const key = `${record.userId}__${record.date}`;
+    if (!buckets.has(key)) {
+      buckets.set(key, new Set<string>());
+    }
+    if (record.time) {
+      buckets.get(key)!.add(record.time);
+    }
+  });
+
+  return Array.from(buckets.entries()).map(([key, timesSet]) => {
+    const [employeeCode, date] = key.split("__");
+    const times = Array.from(timesSet).sort();
+    return {
+      employeeCode,
+      date,
+      times,
+    };
+  });
 };

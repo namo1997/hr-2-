@@ -2,18 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { prisma } from "@/lib/prisma";
 
-type AttendanceStatusCounts = Record<string, number>;
-
-const toStartOfDay = (date: Date) => {
-  const next = new Date(date);
-  next.setHours(0, 0, 0, 0);
-  return next;
-};
-
-const toEndOfDay = (date: Date) => {
-  const next = new Date(date);
-  next.setHours(23, 59, 59, 999);
-  return next;
+type Filters = {
+  startDate: string;
+  endDate: string;
+  departmentId?: string | null;
+  search?: string;
 };
 
 const parseDate = (value: string | null, fallback: Date) => {
@@ -23,6 +16,18 @@ const parseDate = (value: string | null, fallback: Date) => {
     return fallback;
   }
   return parsed;
+};
+
+const toStartOfDayUTC = (date: Date) => {
+  const next = new Date(date);
+  next.setUTCHours(0, 0, 0, 0);
+  return next;
+};
+
+const toEndOfDayUTC = (date: Date) => {
+  const next = new Date(date);
+  next.setUTCHours(23, 59, 59, 999);
+  return next;
 };
 
 export async function GET(request: NextRequest) {
@@ -35,109 +40,151 @@ export async function GET(request: NextRequest) {
 
     const today = new Date();
     const defaultStart = new Date(today.getFullYear(), today.getMonth(), 1);
-    const startDate = toStartOfDay(parseDate(startDateParam, defaultStart));
-    const endDate = toEndOfDay(parseDate(endDateParam, today));
+    const startDate = toStartOfDayUTC(parseDate(startDateParam, defaultStart));
+    const endDate = toEndOfDayUTC(parseDate(endDateParam, today));
 
-    const employeeFilters: Record<string, unknown> = {};
+    const employeeWhere: Parameters<typeof prisma.employee.findMany>[0]['where'] = {};
 
-    if (departmentIdParam) {
+    if (departmentIdParam && departmentIdParam !== 'ALL') {
       const departmentIdNum = Number(departmentIdParam);
       if (!Number.isNaN(departmentIdNum)) {
-        employeeFilters.departmentId = departmentIdNum;
+        employeeWhere.departmentId = departmentIdNum;
       }
     }
 
     if (searchParam && searchParam.trim().length > 0) {
       const keyword = searchParam.trim();
-      employeeFilters.OR = [
-        { employeeCode: { contains: keyword, mode: "insensitive" } },
-        { name: { contains: keyword, mode: "insensitive" } },
+      employeeWhere.OR = [
+        { employeeCode: { contains: keyword, mode: 'insensitive' } },
+        { name: { contains: keyword, mode: 'insensitive' } },
       ];
     }
 
-    const where: Parameters<typeof prisma.attendance.findMany>[0] = {
-      date: {
+    let filteredEmployeeCodes: string[] | undefined;
+    const preFilteredEmployees = Object.keys(employeeWhere).length > 0
+      ? await prisma.employee.findMany({
+          where: employeeWhere,
+          select: {
+            id: true,
+            employeeCode: true,
+            name: true,
+            departmentId: true,
+            departmentRel: true,
+            branchId: true,
+            branch: true,
+            zoneId: true,
+            zone: true,
+          },
+        })
+      : [];
+
+    if (preFilteredEmployees.length > 0) {
+      filteredEmployeeCodes = preFilteredEmployees
+        .map((employee) => employee.employeeCode)
+        .filter((code): code is string => Boolean(code && code.trim().length > 0));
+
+      if (filteredEmployeeCodes.length === 0) {
+        return NextResponse.json({
+          filters: {
+            startDate: startDate.toISOString(),
+            endDate: endDate.toISOString(),
+            departmentId: departmentIdParam,
+            search: searchParam ?? '',
+          } satisfies Filters,
+          summary: {
+            totalRecords: 0,
+            totalEmployees: 0,
+            totalScans: 0,
+          },
+          records: [],
+          generatedAt: new Date().toISOString(),
+        });
+      }
+    }
+
+    const scanWhere: Parameters<typeof prisma.attendanceScan.findMany>[0]['where'] = {
+      scanDate: {
         gte: startDate,
         lte: endDate,
       },
-      ...(Object.keys(employeeFilters).length > 0
-        ? {
-            employee: {
-              is: employeeFilters,
-            },
-          }
-        : {}),
     };
 
-    const records = await prisma.attendance.findMany({
-      where,
-      include: {
-        employee: {
-          include: {
-            departmentRel: true,
-            branch: true,
-            zone: true,
-          },
-        },
-      },
+    if (filteredEmployeeCodes) {
+      scanWhere.employeeCode = { in: filteredEmployeeCodes };
+    }
+
+    const scans = await prisma.attendanceScan.findMany({
+      where: scanWhere,
       orderBy: [
-        { date: "desc" },
-        { employeeId: "asc" },
-        { id: "asc" },
+        { scanDate: 'desc' },
+        { employeeCode: 'asc' },
+        { id: 'asc' },
       ],
     });
 
-    const statusCounts: AttendanceStatusCounts = {};
-    let totalWorkMinutes = 0;
-    let totalOvertimeMinutes = 0;
-    let lateCount = 0;
-    let earlyLeaveCount = 0;
+    const codesInScans = Array.from(new Set(scans.map((scan) => scan.employeeCode).filter(Boolean)));
 
-    const data = records.map((record) => {
-      statusCounts[record.status] = (statusCounts[record.status] ?? 0) + 1;
-      totalWorkMinutes += record.workMinutes;
-      totalOvertimeMinutes += record.overtimeMinutes;
-      if (record.isLate) lateCount += 1;
-      if (record.isEarlyLeave) earlyLeaveCount += 1;
+    const existingEmployeeMap = new Map<string, Awaited<typeof prisma.employee.findFirst>>();
+    preFilteredEmployees.forEach((employee) => {
+      existingEmployeeMap.set(employee.employeeCode, employee);
+    });
 
-      const employee = record.employee;
+    const missingCodes = codesInScans.filter((code) => !existingEmployeeMap.has(code));
+    if (missingCodes.length > 0) {
+      const additionalEmployees = await prisma.employee.findMany({
+        where: {
+          employeeCode: { in: missingCodes },
+        },
+        select: {
+          id: true,
+          employeeCode: true,
+          name: true,
+          departmentId: true,
+          departmentRel: true,
+          branchId: true,
+          branch: true,
+          zoneId: true,
+          zone: true,
+        },
+      });
+      additionalEmployees.forEach((employee) => {
+        existingEmployeeMap.set(employee.employeeCode, employee);
+      });
+    }
+
+    const records = scans.map((scan) => {
+      const employee = scan.employeeCode
+        ? existingEmployeeMap.get(scan.employeeCode)
+        : undefined;
+      let scanTimes: string[] = [];
+      try {
+        scanTimes = scan.allScans ? (JSON.parse(scan.allScans) as string[]) : [];
+      } catch (error) {
+        console.warn('Failed to parse scan times for', scan.employeeCode, error);
+      }
 
       return {
-        id: record.id,
-        date: record.date.toISOString(),
-        employeeId: record.employeeId,
-        employeeCode: employee.employeeCode,
-        employeeName: employee.name,
-        departmentId: employee.departmentId ?? null,
-        departmentName:
-          employee.departmentRel?.name ?? employee.department ?? null,
-        branchId: employee.branchId ?? null,
-        branchName: employee.branch?.name ?? null,
-        zoneId: employee.zoneId ?? null,
-        zoneName: employee.zone?.name ?? null,
-        status: record.status,
-        isLate: record.isLate,
-        lateMinutes: record.lateMinutes,
-        isEarlyLeave: record.isEarlyLeave,
-        earlyMinutes: record.earlyMinutes,
-        workMinutes: record.workMinutes,
-        overtimeMinutes: record.overtimeMinutes,
-        checkIn: record.checkIn,
-        breakOut: record.breakOut,
-        breakIn: record.breakIn,
-        checkOut: record.checkOut,
-        notes: record.notes,
+        id: scan.id,
+        employeeCode: scan.employeeCode,
+        employeeName: employee?.name ?? null,
+        departmentId: employee?.departmentId ?? null,
+        departmentName: employee?.departmentRel?.name ?? null,
+        branchId: employee?.branchId ?? null,
+        branchName: employee?.branch?.name ?? null,
+        zoneId: employee?.zoneId ?? null,
+        zoneName: employee?.zone?.name ?? null,
+        date: scan.scanDate.toISOString(),
+        scanCount: scan.scanCount,
+        scanTimes,
+        importSource: scan.importSource,
+        importedAt: scan.importedAt.toISOString(),
       };
     });
 
     const summary = {
       totalRecords: records.length,
-      distinctEmployees: new Set(records.map((record) => record.employeeId)).size,
-      statusCounts,
-      lateCount,
-      earlyLeaveCount,
-      totalWorkMinutes,
-      totalOvertimeMinutes,
+      totalEmployees: new Set(records.map((record) => record.employeeCode)).size,
+      totalScans: records.reduce((sum, record) => sum + (record.scanCount ?? 0), 0),
     };
 
     return NextResponse.json({
@@ -146,9 +193,9 @@ export async function GET(request: NextRequest) {
         endDate: endDate.toISOString(),
         departmentId: departmentIdParam,
         search: searchParam ?? '',
-      },
+      } satisfies Filters,
       summary,
-      records: data,
+      records,
       generatedAt: new Date().toISOString(),
     });
   } catch (error) {
