@@ -2,6 +2,10 @@
 
 This document helps a new AI contributor continue work on the project without losing context.
 
+
+- ระบบนับ OT ตามกฎใหม่ (ต้องทำงานเกิน 30 นาทีหลังเลิก หรือพักไม่ครบ 30 นาที)
+- เพิ่มฟิลด์ `cycleStartDay`/`cycleEndDay` เพื่อกำหนดรอบเงินเดือน (ค่าเริ่มต้น 26-25)
+- หน้า Work Calculation ปรับใหม่: ต้องเลือกสาขา/แผนกก่อนคำนวณ พร้อมแสดงสถานะ “รอตรวจสอบ” และแยกมาสายจากเข้า/พัก
 ## Project Snapshot
 
 - Framework: Next.js 16 (App Router, client components), TypeScript, TailwindCSS 4.
@@ -44,6 +48,16 @@ All routes under `app/api/...` use REST semantics and return JSON.
 - `GET /api/attendance` — fetch processed attendance records with optional filters (date range, department, keyword).
 
 ## Frontend Flow (app/employees/page.tsx)
+
+
+## Leave Workflow (app/leave/page.tsx)
+
+- โหลดโครงสร้างโซน/สาขา/แผนก/พนักงานทั้งหมดจาก API เพื่อให้พนักงานเลือกได้ตามสายบังคับบัญชา
+- โหมดการลา 3 แบบ: `FULL_DAY`, `HOURLY`, `MIXED`
+  - Mixed mode สามารถเลือกช่วงวันเต็มและเพิ่มเวลาย่อยหลายชุด (30 นาทีต่อช่วง) ได้พร้อมกัน
+- คำนวณเวลาขอลาเป็นนาที/ชั่วโมง และตรวจสอบขั้นต่ำ 30 นาทีเสมอ
+- เมื่อเปิด “ขอย้อนหลัง” ระบบจะเรียก `/api/attendance` ตรวจสอบว่ามีการลงเวลาทำงานในช่วงวันย้อนหลังหรือไม่ ก่อนยื่นคำขอ
+- ส่งคำขอสำเร็จแล้วรีเซ็ตรายการช่วงเวลาย่อยและเวลาคอนฟิก เพื่อพร้อมรับคำขอใหม่
 
 1. Loads zones/branches/departments/employees from APIs on mount.
 2. Step-by-step UI:
